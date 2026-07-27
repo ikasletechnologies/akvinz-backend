@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Customer {
+  id                String   @id @default(cuid())
+  fullName          String
+  mobileNumber      String
+  email             String   @unique
+  
+  // Address details
+  addressLine1      String
+  addressLine2      String?
+  city              String
+  state             String
+  pincode           String
+  
+  planDuration      Int      // 12 or 24
+  houseType         String   // "permanent" or "rent"
+  
+  // Document references (S3 URLs, file paths, etc.)
+  aadharImageUrl    String?
+  panImageUrl       String?
+  residenceDocUrl   String?  // EB Bill or Rental Agreement
+  
+  // Payment info
+  paymentStatus     String   @default("PENDING") // PENDING, COMPLETED, FAILED
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+
+  // Rental Subscription info
+  rentalPlanDuration Int?     // 12 or 24
+  rentalAmount       Int?     // 699 or 449
+  subscriptionStatus String   @default("INACTIVE") // INACTIVE, ACTIVE, CANCELLED
+  subscriptionStart  DateTime?
+  subscriptionEnd    DateTime?
+  lastPaymentDate    DateTime?
+
+  // Product return info (separate from subscription cancellation)
+  returnRequested    Boolean   @default(false)
+  returnRequestedAt  DateTime?
+  refundAmount       Int?      // Final refund decided by admin after inspecting the returned product
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
