@@ -1,0 +1,24 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const requireAdmin_1 = require("../middlewares/requireAdmin");
+const upload_middleware_1 = require("../middlewares/upload.middleware");
+const admin_controller_1 = require("../controllers/admin.controller");
+const invoice_controller_1 = require("../controllers/invoice.controller");
+const returnProcess_controller_1 = require("../controllers/returnProcess.controller");
+const router = (0, express_1.Router)();
+router.post("/admin/login", admin_controller_1.login);
+router.get("/admin/stats", requireAdmin_1.requireAdmin, admin_controller_1.getStats);
+router.get("/admin/customers", requireAdmin_1.requireAdmin, admin_controller_1.listCustomers);
+router.get("/admin/customers/:id", requireAdmin_1.requireAdmin, admin_controller_1.getCustomer);
+router.patch("/admin/customers/:id", requireAdmin_1.requireAdmin, admin_controller_1.updateCustomer);
+router.delete("/admin/customers/:id", requireAdmin_1.requireAdmin, admin_controller_1.deleteCustomer);
+router.get("/admin/drafts", requireAdmin_1.requireAdmin, admin_controller_1.listDrafts);
+router.delete("/admin/drafts/:id", requireAdmin_1.requireAdmin, admin_controller_1.deleteDraft);
+router.post("/admin/process-renewals", requireAdmin_1.requireAdmin, admin_controller_1.triggerRenewals);
+router.get("/admin/customers/:id/invoices", requireAdmin_1.requireAdmin, invoice_controller_1.listCustomerInvoices);
+router.get("/admin/invoices/:invoiceId/pdf", requireAdmin_1.requireAdmin, invoice_controller_1.downloadInvoicePdf);
+router.get("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, returnProcess_controller_1.listReturnEvents);
+router.post("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, upload_middleware_1.upload.fields([{ name: "defectImages", maxCount: 3 }]), returnProcess_controller_1.createReturnEvent);
+exports.default = router;
+//# sourceMappingURL=admin.routes.js.map

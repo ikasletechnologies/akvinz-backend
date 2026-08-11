@@ -3,3 +3,6 @@ node_modules
 .env
 
 /src/generated/prisma
+
+# Uploaded documents (Aadhar/PAN/residence proof) live outside the repo (see UPLOAD_DIR in .env)
+uploads/

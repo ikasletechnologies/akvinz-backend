@@ -24,8 +24,10 @@ model Customer {
   houseType         String   // "permanent" or "rent"
   
   // Document references (S3 URLs, file paths, etc.)
-  aadharImageUrl    String?
-  panImageUrl       String?
+  aadharFrontImageUrl String?
+  aadharBackImageUrl  String?
+  panFrontImageUrl    String?
+  panBackImageUrl     String?
   residenceDocUrl   String?  // EB Bill or Rental Agreement
   
   // Payment info
@@ -40,11 +42,85 @@ model Customer {
   subscriptionStart  DateTime?
   subscriptionEnd    DateTime?
   lastPaymentDate    DateTime?
+  billingDay         Int?      // day-of-month billing anchor (from subscriptionStart), used to compute every renewal so drift doesn't accumulate month over month
+
+  // Assigned product details, set manually by admin (not collected from customer)
+  modelName          String?
+  machineSerialNumber String?
 
   // Product return info (separate from subscription cancellation)
   returnRequested    Boolean   @default(false)
   returnRequestedAt  DateTime?
   refundAmount       Int?      // Final refund decided by admin after inspecting the returned product
+
+  invoices          Invoice[]
+  returnProcessEvents ReturnProcessEvent[]
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// One row per billed/refunded transaction, so each gets its own permanent
+// bill number and a re-downloadable PDF receipt (Customer only tracks the
+// latest payment, not history).
+model Invoice {
+  id            String   @id @default(cuid())
+  billNumber    String   @unique
+  type          String   // SECURITY_DEPOSIT, RENTAL, REFUND
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id])
+
+  productType   String   // display label, e.g. "Refundable Security Deposit"
+  amount        Int      // INR
+  paymentMethod String   // "Razorpay" or "Manual"
+  transactionId String?  // razorpayPaymentId, null for manual refunds
+  status        String   // FUNDED, REFUNDED
+  reason        String?  // shown as "No reason available." when null
+
+  documentDate  DateTime @default(now())
+  createdAt     DateTime @default(now())
+}
+
+// One row per admin update to a return-process step — an append-only log
+// (never edited or overwritten), so the full history of a customer's return
+// is auditable. The "current" status of a step is simply its most recent
+// event by createdAt.
+model ReturnProcessEvent {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  step       String   // DEINITIALIZATION_INITIATED, DEFECT_REPORTED, MACHINE_COLLECTED, MACHINE_RECEIVED_WAREHOUSE, REFUND_INITIATED, PAYMENT_REFUNDED
+  status     String   // PENDING/COMPLETED for most steps, YES/NO for DEFECT_REPORTED
+  eventDate  DateTime // business date the admin attributes this update to
+  remarks    String?  // required when step=DEFECT_REPORTED and status=YES
+  defectImageUrls String[] // up to 3 photos, only used when step=DEFECT_REPORTED and status=YES
+
+  createdAt  DateTime @default(now()) // when this log entry was actually recorded
+}
+
+// Atomic per-type-per-year sequence used to generate bill numbers like
+// SEC-2026-00001. id is "{prefix}-{year}", e.g. "SEC-2026".
+model BillCounter {
+  id      String @id
+  lastSeq Int    @default(0)
+}
+
+// Captures registration form input as the customer types, before OTP verification
+// and final submission, so partial entries are not lost if they abandon the form.
+model CustomerDraft {
+  id                String   @id
+  fullName          String?
+  mobileNumber      String?
+  email             String?
+  addressLine1      String?
+  addressLine2      String?
+  city              String?
+  state             String?
+  pincode           String?
+  planDuration      Int?
+  houseType         String?
+  residenceDocType  String?
 
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
