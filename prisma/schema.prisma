@@ -117,6 +117,13 @@ model PaymentLinkRequest {
   razorpayPaymentId String?
   paidAt            DateTime?
 
+  // Set only for links generated from the "Change Plan" panel as a deposit
+  // top-up. Once this link is paid (webhook or manual "Mark as Paid"), the
+  // plan change is applied automatically — see applyPlanChange in
+  // planChange.service.ts — instead of requiring a separate manual
+  // "Confirm & Apply Plan Change" click.
+  planChangeTargetDuration Int?
+
   createdAt     DateTime @default(now())
 }
 

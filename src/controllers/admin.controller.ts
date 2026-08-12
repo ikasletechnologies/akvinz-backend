@@ -4,9 +4,8 @@ import { prisma } from "../config/prisma";
 import { env } from "../config/env";
 import { razorpay } from "../config/razorpay";
 import { processRenewals } from "../services/billing.service";
-import { createInvoice } from "../services/invoice.service";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
-import { securityDepositAmount, rentalAmountForPlan } from "../utils/planPricing";
+import { applyPlanChange } from "../services/planChange.service";
 
 export function login(req: Request, res: Response): any {
   const { email, password } = req.body;
@@ -224,6 +223,12 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
       return res.status(400).json({ success: false, message: "A valid amount is required" });
     }
 
+    // Set only when this link is generated from "Change Plan" as a deposit
+    // top-up — once it's paid, the plan change applies automatically
+    // instead of needing a separate manual confirmation.
+    const planChangeTargetDuration = Number(req.body.planChangeTargetDuration);
+    const hasPlanChangeTarget = planChangeTargetDuration === 12 || planChangeTargetDuration === 24;
+
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
     if (!customer) {
       return res.status(404).json({ success: false, message: "Customer not found" });
@@ -253,7 +258,8 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
         amount,
         razorpayPaymentLinkId: paymentLink.id,
         shortUrl: paymentLink.short_url,
-        expireBy: new Date((paymentLink.expire_by as number) * 1000)
+        expireBy: new Date((paymentLink.expire_by as number) * 1000),
+        planChangeTargetDuration: hasPlanChangeTarget ? planChangeTargetDuration : null
       }
     });
 
@@ -290,10 +296,10 @@ export async function markPaymentLinkAsPaid(req: Request, res: Response): Promis
   }
 }
 
-// Switches a customer between the 12-month (₹2,999 deposit / ₹699 rental) and
-// 24-month (₹3,999 deposit / ₹449 rental) plans. The deposit difference is
-// recorded as a top-up invoice (upgrade) or a refund invoice (downgrade) so
-// it stays auditable alongside the customer's other receipts.
+// Switches a customer between the 12-month and 24-month plans (amounts per
+// planPricing.ts). The deposit difference is recorded as a top-up invoice
+// (upgrade) or a refund invoice (downgrade) so it stays auditable alongside
+// the customer's other receipts.
 export async function changePlan(req: Request, res: Response): Promise<any> {
   try {
     const newPlanDuration = Number(req.body.newPlanDuration);
@@ -301,59 +307,22 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
       return res.status(400).json({ success: false, message: "Plan must be 12 or 24 months" });
     }
 
-    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
-    if (!customer) {
+    const requestedAmount = Number(req.body.amountHandled);
+    const result = await applyPlanChange({
+      customerId: req.params.id as string,
+      newPlanDuration,
+      amountHandled: Number.isFinite(requestedAmount) && requestedAmount >= 0 ? requestedAmount : undefined,
+      paymentMethod: "Manual"
+    });
+
+    if (result.status === "not_found") {
       return res.status(404).json({ success: false, message: "Customer not found" });
     }
-    if (customer.planDuration === newPlanDuration) {
+    if (result.status === "already_on_plan") {
       return res.status(400).json({ success: false, message: "Customer is already on this plan" });
     }
 
-    const oldDeposit = securityDepositAmount(customer.planDuration);
-    const newDeposit = securityDepositAmount(newPlanDuration);
-    const difference = newDeposit - oldDeposit;
-    const reason = `Plan changed from ${customer.planDuration} to ${newPlanDuration} months`;
-
-    // Admin can override the theoretical deposit difference with the amount
-    // actually handled (e.g. a partial payment, or a rounding adjustment);
-    // falls back to the computed difference if omitted or invalid.
-    const requestedAmount = Number(req.body.amountHandled);
-    const recordedAmount = Number.isFinite(requestedAmount) && requestedAmount >= 0
-      ? requestedAmount
-      : Math.abs(difference);
-
-    const updated = await prisma.customer.update({
-      where: { id: customer.id },
-      data: {
-        planDuration: newPlanDuration,
-        rentalPlanDuration: newPlanDuration,
-        rentalAmount: rentalAmountForPlan(newPlanDuration)
-      }
-    });
-
-    const invoice = await createInvoice(
-      difference > 0
-        ? {
-            type: "SECURITY_DEPOSIT",
-            customerId: customer.id,
-            productType: "Security Deposit Top-up (Plan Upgrade)",
-            amount: recordedAmount,
-            paymentMethod: "Manual",
-            status: "FUNDED",
-            reason
-          }
-        : {
-            type: "REFUND",
-            customerId: customer.id,
-            productType: "Security Deposit Refund (Plan Downgrade)",
-            amount: recordedAmount,
-            paymentMethod: "Manual",
-            status: "REFUNDED",
-            reason
-          }
-    );
-
-    res.json({ success: true, customer: updated, invoice, difference, recordedAmount });
+    res.json({ success: true, customer: result.customer, invoice: result.invoice, difference: result.difference, recordedAmount: result.recordedAmount });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
