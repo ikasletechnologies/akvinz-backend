@@ -4,7 +4,8 @@ exports.generateBillNumber = generateBillNumber;
 const TYPE_PREFIX = {
     SECURITY_DEPOSIT: "SEC",
     RENTAL: "REN",
-    REFUND: "REF"
+    REFUND: "REF",
+    PAYMENT_LINK: "PAY"
 };
 /**
  * Atomically allocates the next bill number for a type, resetting the

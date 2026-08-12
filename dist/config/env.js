@@ -26,6 +26,7 @@ exports.env = {
     razorpay: {
         keyId: required("RAZORPAY_KEY_ID"),
         keySecret: required("RAZORPAY_KEY_SECRET"),
+        webhookSecret: required("RAZORPAY_WEBHOOK_SECRET"),
     },
     admin: {
         email: required("ADMIN_EMAIL"),

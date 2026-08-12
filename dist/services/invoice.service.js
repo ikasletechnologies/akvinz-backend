@@ -1,9 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.securityDepositAmount = void 0;
 exports.createInvoice = createInvoice;
-exports.securityDepositAmount = securityDepositAmount;
 const prisma_1 = require("../config/prisma");
 const billNumber_1 = require("../utils/billNumber");
+const planPricing_1 = require("../utils/planPricing");
+Object.defineProperty(exports, "securityDepositAmount", { enumerable: true, get: function () { return planPricing_1.securityDepositAmount; } });
 async function createInvoice(input) {
     return prisma_1.prisma.$transaction(async (tx) => {
         const billNumber = await (0, billNumber_1.generateBillNumber)(tx, input.type);
@@ -21,14 +23,5 @@ async function createInvoice(input) {
             }
         });
     });
-}
-// Deposit amount is a fixed business rule per plan length, not something we
-// trust the client to tell us for a financial document.
-const SECURITY_DEPOSIT_AMOUNTS = {
-    12: 2999,
-    24: 3999
-};
-function securityDepositAmount(planDuration) {
-    return SECURITY_DEPOSIT_AMOUNTS[planDuration] ?? SECURITY_DEPOSIT_AMOUNTS[12];
 }
 //# sourceMappingURL=invoice.service.js.map

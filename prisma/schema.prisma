@@ -10,7 +10,7 @@ datasource db {
 model Customer {
   id                String   @id @default(cuid())
   fullName          String
-  mobileNumber      String
+  mobileNumber      String   @unique
   email             String   @unique
   
   // Address details
@@ -127,12 +127,16 @@ model BillCounter {
   lastSeq Int    @default(0)
 }
 
-// Captures registration form input as the customer types, before OTP verification
-// and final submission, so partial entries are not lost if they abandon the form.
+// Captures the registration all the way through "form submitted, awaiting
+// payment" — a person only becomes a Customer once their payment succeeds
+// (see verifyPayment). Until then, everything they entered — including
+// uploaded documents, once the form itself has been submitted — lives here,
+// so a cancelled/failed/abandoned payment leaves a followable Draft instead
+// of a half-registered Customer.
 model CustomerDraft {
   id                String   @id
   fullName          String?
-  mobileNumber      String?
+  mobileNumber      String?  @unique
   email             String?
   addressLine1      String?
   addressLine2      String?
@@ -142,6 +146,12 @@ model CustomerDraft {
   planDuration      Int?
   houseType         String?
   residenceDocType  String?
+
+  aadharFrontImageUrl String?
+  aadharBackImageUrl  String?
+  panFrontImageUrl    String?
+  panBackImageUrl     String?
+  residenceDocUrl     String?
 
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt

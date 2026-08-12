@@ -16,6 +16,10 @@ router.delete("/admin/customers/:id", requireAdmin_1.requireAdmin, admin_control
 router.get("/admin/drafts", requireAdmin_1.requireAdmin, admin_controller_1.listDrafts);
 router.delete("/admin/drafts/:id", requireAdmin_1.requireAdmin, admin_controller_1.deleteDraft);
 router.post("/admin/process-renewals", requireAdmin_1.requireAdmin, admin_controller_1.triggerRenewals);
+router.post("/admin/customers/:id/payment-link", requireAdmin_1.requireAdmin, admin_controller_1.createPaymentLink);
+router.get("/admin/customers/:id/payment-links", requireAdmin_1.requireAdmin, admin_controller_1.listCustomerPaymentLinks);
+router.post("/admin/payment-links/:linkId/mark-paid", requireAdmin_1.requireAdmin, admin_controller_1.markPaymentLinkAsPaid);
+router.post("/admin/customers/:id/change-plan", requireAdmin_1.requireAdmin, admin_controller_1.changePlan);
 router.get("/admin/customers/:id/invoices", requireAdmin_1.requireAdmin, invoice_controller_1.listCustomerInvoices);
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin_1.requireAdmin, invoice_controller_1.downloadInvoicePdf);
 router.get("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, returnProcess_controller_1.listReturnEvents);

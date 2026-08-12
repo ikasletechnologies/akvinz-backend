@@ -13,6 +13,7 @@ router.post("/register", upload_middleware_1.upload.fields([
     { name: "residenceFile", maxCount: 1 }
 ]), customer_controller_1.register);
 router.post("/customer/draft", customer_controller_1.saveDraft);
+router.get("/customer/draft/by-mobile/:mobileNumber", customer_controller_1.getDraftByMobile);
 router.get("/customer/draft/:draftId", customer_controller_1.getDraft);
 router.get("/customer/:customerId/invoices/:invoiceId/pdf", invoice_controller_1.downloadCustomerInvoicePdf);
 router.get("/customer/:mobileNumber", customer_controller_1.getCustomerByMobile);

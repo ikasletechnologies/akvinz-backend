@@ -1,11 +1,59 @@
 import { Request, Response } from "express";
+import { Prisma, CustomerDraft } from "@prisma/client";
 import { prisma } from "../config/prisma";
 import { buildFileUrl } from "../utils/fileUrl";
 import { createInvoice } from "../services/invoice.service";
 
+type DraftUpsertResult =
+  | { status: "customer_exists" }
+  | { status: "ok"; draft: CustomerDraft; resumedDraftId?: string };
+
+// Shared by saveDraft (autosave while typing) and register (the final
+// "submit registration" step, which now also just writes a draft — a
+// Customer row is only ever created once payment succeeds, in verifyPayment).
+// Keeps the "one draft per mobile number" and "mobile numbers are only
+// checked against real Customers" rules in one place.
+async function upsertDraft(draftId: string, data: Omit<Prisma.CustomerDraftCreateInput, "id">): Promise<DraftUpsertResult> {
+  const mobileNumber = data.mobileNumber ?? undefined;
+
+  if (mobileNumber) {
+    const existingCustomer = await prisma.customer.findUnique({ where: { mobileNumber } });
+    if (existingCustomer) {
+      return { status: "customer_exists" };
+    }
+
+    // A draft for this mobile number may already exist under a different
+    // draftId (e.g. a previous attempt on another device/browser, or after
+    // local storage was cleared). Resume that row instead of letting a
+    // second draft for the same person pile up.
+    const existingDraft = await prisma.customerDraft.findUnique({ where: { mobileNumber } });
+    if (existingDraft && existingDraft.id !== draftId) {
+      const [, resumedDraft] = await prisma.$transaction([
+        prisma.customerDraft.deleteMany({ where: { id: draftId } }),
+        prisma.customerDraft.update({ where: { id: existingDraft.id }, data })
+      ]);
+      return { status: "ok", draft: resumedDraft, resumedDraftId: resumedDraft.id };
+    }
+  }
+
+  const draft = await prisma.customerDraft.upsert({
+    where: { id: draftId },
+    update: data,
+    create: { id: draftId, ...data }
+  });
+  return { status: "ok", draft };
+}
+
+// The final step of filling out the registration form. This does NOT create
+// a Customer — it only finalizes the Draft (now including uploaded document
+// URLs) so the person can proceed to payment. A Customer only comes into
+// existence once that payment succeeds (see verifyPayment in
+// payment.controller.ts). If payment is cancelled, fails, or is never
+// completed, this row simply remains a Draft for follow-up.
 export async function register(req: Request, res: Response): Promise<any> {
   try {
     const {
+      draftId,
       fullName,
       mobileNumber,
       email,
@@ -15,37 +63,47 @@ export async function register(req: Request, res: Response): Promise<any> {
       state,
       pincode,
       planDuration,
-      houseType
+      houseType,
+      residenceDocType
     } = req.body;
+
+    if (!draftId) {
+      return res.status(400).json({ success: false, message: "draftId is required" });
+    }
 
     const files = req.files as { [fieldname: string]: Express.Multer.File[] };
 
-    const customer = await prisma.customer.create({
-      data: {
-        fullName,
-        mobileNumber,
-        email,
-        addressLine1,
-        addressLine2: addressLine2 || null,
-        city,
-        state,
-        pincode,
-        planDuration: parseInt(planDuration),
-        houseType,
-        aadharFrontImageUrl: buildFileUrl(files, "aadharFrontFile"),
-        aadharBackImageUrl: buildFileUrl(files, "aadharBackFile"),
-        panFrontImageUrl: buildFileUrl(files, "panFrontFile"),
-        panBackImageUrl: buildFileUrl(files, "panBackFile"),
-        residenceDocUrl: buildFileUrl(files, "residenceFile"),
-        paymentStatus: "PENDING"
-      }
-    });
+    const data = {
+      fullName,
+      mobileNumber,
+      email,
+      addressLine1,
+      addressLine2: addressLine2 || null,
+      city,
+      state,
+      pincode,
+      planDuration: planDuration ? parseInt(planDuration) : undefined,
+      houseType,
+      residenceDocType,
+      // Fall back to undefined (not null) so re-submitting a resumed draft
+      // without re-picking a file doesn't wipe out a document it already has.
+      aadharFrontImageUrl: buildFileUrl(files, "aadharFrontFile") ?? undefined,
+      aadharBackImageUrl: buildFileUrl(files, "aadharBackFile") ?? undefined,
+      panFrontImageUrl: buildFileUrl(files, "panFrontFile") ?? undefined,
+      panBackImageUrl: buildFileUrl(files, "panBackFile") ?? undefined,
+      residenceDocUrl: buildFileUrl(files, "residenceFile") ?? undefined
+    };
 
-    res.json({ success: true, customerId: customer.id });
+    const result = await upsertDraft(draftId, data);
+    if (result.status === "customer_exists") {
+      return res.status(400).json({ success: false, message: "A customer with this mobile number is already registered." });
+    }
+
+    res.json({ success: true, draftId: result.draft.id });
   } catch (error: any) {
     console.error("Registration Error:", error);
     if (error.code === 'P2002') {
-      return res.status(400).json({ success: false, message: "A user with this email already exists." });
+      return res.status(400).json({ success: false, message: "A customer with this mobile number is already registered." });
     }
     res.status(500).json({ success: false, message: error.message });
   }
@@ -86,13 +144,16 @@ export async function saveDraft(req: Request, res: Response): Promise<any> {
       residenceDocType
     };
 
-    const draft = await prisma.customerDraft.upsert({
-      where: { id: draftId },
-      update: data,
-      create: { id: draftId, ...data }
-    });
+    const result = await upsertDraft(draftId, data);
+    if (result.status === "customer_exists") {
+      return res.status(409).json({
+        success: false,
+        code: "CUSTOMER_EXISTS",
+        message: "This mobile number is already registered."
+      });
+    }
 
-    res.json({ success: true, draft });
+    res.json({ success: true, draft: result.draft, resumedDraftId: result.resumedDraftId });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -101,6 +162,20 @@ export async function saveDraft(req: Request, res: Response): Promise<any> {
 export async function getDraft(req: Request<{ draftId: string }>, res: Response): Promise<any> {
   try {
     const draft = await prisma.customerDraft.findUnique({ where: { id: req.params.draftId } });
+    if (!draft) {
+      return res.status(404).json({ success: false, message: "Draft not found" });
+    }
+    res.json({ success: true, draft });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+// Lets the registration form auto-resume an in-progress draft as soon as the
+// customer types their mobile number, even without a `?draft=<id>` link.
+export async function getDraftByMobile(req: Request<{ mobileNumber: string }>, res: Response): Promise<any> {
+  try {
+    const draft = await prisma.customerDraft.findUnique({ where: { mobileNumber: req.params.mobileNumber } });
     if (!draft) {
       return res.status(404).json({ success: false, message: "Draft not found" });
     }

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { upload } from "../middlewares/upload.middleware";
-import { register, getCustomerByMobile, requestReturn, closeAccount, saveDraft, getDraft } from "../controllers/customer.controller";
+import { register, getCustomerByMobile, requestReturn, closeAccount, saveDraft, getDraft, getDraftByMobile } from "../controllers/customer.controller";
 import { downloadCustomerInvoicePdf } from "../controllers/invoice.controller";
 
 const router = Router();
@@ -14,6 +14,7 @@ router.post("/register", upload.fields([
 ]), register);
 
 router.post("/customer/draft", saveDraft);
+router.get("/customer/draft/by-mobile/:mobileNumber", getDraftByMobile);
 router.get("/customer/draft/:draftId", getDraft);
 
 router.get("/customer/:customerId/invoices/:invoiceId/pdf", downloadCustomerInvoicePdf);
