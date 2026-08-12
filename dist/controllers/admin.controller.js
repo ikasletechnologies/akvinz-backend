@@ -13,6 +13,8 @@ exports.updateCustomer = updateCustomer;
 exports.deleteCustomer = deleteCustomer;
 exports.createPaymentLink = createPaymentLink;
 exports.listCustomerPaymentLinks = listCustomerPaymentLinks;
+exports.createPayout = createPayout;
+exports.listCustomerPayouts = listCustomerPayouts;
 exports.markPaymentLinkAsPaid = markPaymentLinkAsPaid;
 exports.changePlan = changePlan;
 exports.triggerRenewals = triggerRenewals;
@@ -278,6 +280,43 @@ async function listCustomerPaymentLinks(req, res) {
             orderBy: { createdAt: "desc" }
         });
         res.json({ success: true, paymentLinks });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+// "Pay Customer" — a manual, immediate payout with no Razorpay involved.
+// Always Completed the moment it's recorded (there's nothing to wait on).
+async function createPayout(req, res) {
+    try {
+        const amount = Number(req.body.amount);
+        const reason = String(req.body.reason || "").trim();
+        if (!amount || amount <= 0) {
+            return res.status(400).json({ success: false, message: "A valid amount is required" });
+        }
+        if (!reason) {
+            return res.status(400).json({ success: false, message: "A reason is required" });
+        }
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
+        if (!customer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        const payout = await prisma_1.prisma.customerPayout.create({
+            data: { customerId: customer.id, amount, reason }
+        });
+        res.json({ success: true, payout });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+async function listCustomerPayouts(req, res) {
+    try {
+        const payouts = await prisma_1.prisma.customerPayout.findMany({
+            where: { customerId: req.params.id },
+            orderBy: { createdAt: "desc" }
+        });
+        res.json({ success: true, payouts });
     }
     catch (error) {
         res.status(500).json({ success: false, message: error.message });

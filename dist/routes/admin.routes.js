@@ -19,6 +19,8 @@ router.post("/admin/process-renewals", requireAdmin_1.requireAdmin, admin_contro
 router.post("/admin/customers/:id/payment-link", requireAdmin_1.requireAdmin, admin_controller_1.createPaymentLink);
 router.get("/admin/customers/:id/payment-links", requireAdmin_1.requireAdmin, admin_controller_1.listCustomerPaymentLinks);
 router.post("/admin/payment-links/:linkId/mark-paid", requireAdmin_1.requireAdmin, admin_controller_1.markPaymentLinkAsPaid);
+router.post("/admin/customers/:id/payout", requireAdmin_1.requireAdmin, admin_controller_1.createPayout);
+router.get("/admin/customers/:id/payouts", requireAdmin_1.requireAdmin, admin_controller_1.listCustomerPayouts);
 router.post("/admin/customers/:id/change-plan", requireAdmin_1.requireAdmin, admin_controller_1.changePlan);
 router.get("/admin/customers/:id/invoices", requireAdmin_1.requireAdmin, invoice_controller_1.listCustomerInvoices);
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin_1.requireAdmin, invoice_controller_1.downloadInvoicePdf);

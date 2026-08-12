@@ -281,6 +281,46 @@ export async function listCustomerPaymentLinks(req: Request, res: Response): Pro
   }
 }
 
+// "Pay Customer" — a manual, immediate payout with no Razorpay involved.
+// Always Completed the moment it's recorded (there's nothing to wait on).
+export async function createPayout(req: Request, res: Response): Promise<any> {
+  try {
+    const amount = Number(req.body.amount);
+    const reason = String(req.body.reason || "").trim();
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, message: "A valid amount is required" });
+    }
+    if (!reason) {
+      return res.status(400).json({ success: false, message: "A reason is required" });
+    }
+
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    const payout = await prisma.customerPayout.create({
+      data: { customerId: customer.id, amount, reason }
+    });
+
+    res.json({ success: true, payout });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function listCustomerPayouts(req: Request, res: Response): Promise<any> {
+  try {
+    const payouts = await prisma.customerPayout.findMany({
+      where: { customerId: req.params.id as string },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json({ success: true, payouts });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
 // Fallback for when the Razorpay webhook hasn't fired (e.g. local dev, where
 // Razorpay can't reach localhost) or is delayed — admin confirms payment
 // after checking the Razorpay dashboard themselves.

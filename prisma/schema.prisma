@@ -56,6 +56,7 @@ model Customer {
   invoices          Invoice[]
   returnProcessEvents ReturnProcessEvent[]
   paymentLinks      PaymentLinkRequest[]
+  payouts           CustomerPayout[]
 
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -125,6 +126,23 @@ model PaymentLinkRequest {
   planChangeTargetDuration Int?
 
   createdAt     DateTime @default(now())
+}
+
+// A manual, immediate payment the company makes TO a customer (e.g. a
+// goodwill refund or ad-hoc adjustment unrelated to a specific deposit/plan
+// event) — recorded directly by the admin, no Razorpay involved, so it's
+// always "Completed" the moment it's saved. Paired with PaymentLinkRequest
+// (the Customer -> Admin direction) to form the customer's unified
+// "Transaction History" of ad-hoc money movement.
+model CustomerPayout {
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id])
+
+  amount      Int      // INR
+  reason      String
+
+  createdAt   DateTime @default(now())
 }
 
 // Atomic per-type-per-year sequence used to generate bill numbers like
