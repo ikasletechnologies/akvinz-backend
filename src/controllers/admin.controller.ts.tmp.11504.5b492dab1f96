@@ -4,9 +4,6 @@ import { prisma } from "../config/prisma";
 import { env } from "../config/env";
 import { razorpay } from "../config/razorpay";
 import { processRenewals } from "../services/billing.service";
-import { createInvoice } from "../services/invoice.service";
-import { markPaymentLinkPaid } from "../services/paymentLink.service";
-import { securityDepositAmount, rentalAmountForPlan } from "../utils/planPricing";
 
 export function login(req: Request, res: Response): any {
   const { email, password } = req.body;
@@ -233,6 +230,8 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
       ? customer.mobileNumber
       : `+91${customer.mobileNumber.replace(/^0+/, "")}`;
 
+    const expireBy = Math.floor(Date.now() / 1000) + 3600;
+
     const paymentLink = await razorpay.paymentLink.create({
       amount: Math.round(amount * 100),
       currency: "INR",
@@ -244,20 +243,19 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
       },
       notify: { sms: false, email: false },
       reminder_enable: false,
-      expire_by: Math.floor(Date.now() / 1000) + 3600
+      expire_by: expireBy
     });
 
-    await prisma.paymentLinkRequest.create({
+    const record = await prisma.paymentLinkRequest.create({
       data: {
         customerId: customer.id,
         amount,
-        razorpayPaymentLinkId: paymentLink.id,
         shortUrl: paymentLink.short_url,
-        expireBy: new Date((paymentLink.expire_by as number) * 1000)
+        expireBy: new Date(expireBy * 1000)
       }
     });
 
-    res.json({ success: true, shortUrl: paymentLink.short_url, expireBy: paymentLink.expire_by });
+    res.json({ success: true, paymentLink: record });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.error?.description || error.message });
   }
@@ -270,90 +268,6 @@ export async function listCustomerPaymentLinks(req: Request, res: Response): Pro
       orderBy: { createdAt: "desc" }
     });
     res.json({ success: true, paymentLinks });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-}
-
-// Fallback for when the Razorpay webhook hasn't fired (e.g. local dev, where
-// Razorpay can't reach localhost) or is delayed — admin confirms payment
-// after checking the Razorpay dashboard themselves.
-export async function markPaymentLinkAsPaid(req: Request, res: Response): Promise<any> {
-  try {
-    const updated = await markPaymentLinkPaid(req.params.linkId as string, null);
-    if (!updated) {
-      return res.status(404).json({ success: false, message: "Payment link not found" });
-    }
-    res.json({ success: true, paymentLink: updated });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-}
-
-// Switches a customer between the 12-month (₹2,999 deposit / ₹699 rental) and
-// 24-month (₹3,999 deposit / ₹449 rental) plans. The deposit difference is
-// recorded as a top-up invoice (upgrade) or a refund invoice (downgrade) so
-// it stays auditable alongside the customer's other receipts.
-export async function changePlan(req: Request, res: Response): Promise<any> {
-  try {
-    const newPlanDuration = Number(req.body.newPlanDuration);
-    if (newPlanDuration !== 12 && newPlanDuration !== 24) {
-      return res.status(400).json({ success: false, message: "Plan must be 12 or 24 months" });
-    }
-
-    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
-    if (!customer) {
-      return res.status(404).json({ success: false, message: "Customer not found" });
-    }
-    if (customer.planDuration === newPlanDuration) {
-      return res.status(400).json({ success: false, message: "Customer is already on this plan" });
-    }
-
-    const oldDeposit = securityDepositAmount(customer.planDuration);
-    const newDeposit = securityDepositAmount(newPlanDuration);
-    const difference = newDeposit - oldDeposit;
-    const reason = `Plan changed from ${customer.planDuration} to ${newPlanDuration} months`;
-
-    // Admin can override the theoretical deposit difference with the amount
-    // actually handled (e.g. a partial payment, or a rounding adjustment);
-    // falls back to the computed difference if omitted or invalid.
-    const requestedAmount = Number(req.body.amountHandled);
-    const recordedAmount = Number.isFinite(requestedAmount) && requestedAmount >= 0
-      ? requestedAmount
-      : Math.abs(difference);
-
-    const updated = await prisma.customer.update({
-      where: { id: customer.id },
-      data: {
-        planDuration: newPlanDuration,
-        rentalPlanDuration: newPlanDuration,
-        rentalAmount: rentalAmountForPlan(newPlanDuration)
-      }
-    });
-
-    const invoice = await createInvoice(
-      difference > 0
-        ? {
-            type: "SECURITY_DEPOSIT",
-            customerId: customer.id,
-            productType: "Security Deposit Top-up (Plan Upgrade)",
-            amount: recordedAmount,
-            paymentMethod: "Manual",
-            status: "FUNDED",
-            reason
-          }
-        : {
-            type: "REFUND",
-            customerId: customer.id,
-            productType: "Security Deposit Refund (Plan Downgrade)",
-            amount: recordedAmount,
-            paymentMethod: "Manual",
-            status: "REFUNDED",
-            reason
-          }
-    );
-
-    res.json({ success: true, customer: updated, invoice, difference, recordedAmount });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }

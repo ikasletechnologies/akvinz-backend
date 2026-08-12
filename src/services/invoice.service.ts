@@ -1,5 +1,8 @@
 import { prisma } from "../config/prisma";
 import { generateBillNumber, InvoiceType } from "../utils/billNumber";
+import { securityDepositAmount } from "../utils/planPricing";
+
+export { securityDepositAmount };
 
 interface CreateInvoiceInput {
   type: InvoiceType;
@@ -29,15 +32,4 @@ export async function createInvoice(input: CreateInvoiceInput) {
       }
     });
   });
-}
-
-// Deposit amount is a fixed business rule per plan length, not something we
-// trust the client to tell us for a financial document.
-const SECURITY_DEPOSIT_AMOUNTS: Record<number, number> = {
-  12: 2999,
-  24: 3999
-};
-
-export function securityDepositAmount(planDuration: number): number {
-  return SECURITY_DEPOSIT_AMOUNTS[planDuration] ?? SECURITY_DEPOSIT_AMOUNTS[12];
 }

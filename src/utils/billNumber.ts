@@ -1,11 +1,12 @@
 import { Prisma } from "@prisma/client";
 
-export type InvoiceType = "SECURITY_DEPOSIT" | "RENTAL" | "REFUND";
+export type InvoiceType = "SECURITY_DEPOSIT" | "RENTAL" | "REFUND" | "PAYMENT_LINK";
 
 const TYPE_PREFIX: Record<InvoiceType, string> = {
   SECURITY_DEPOSIT: "SEC",
   RENTAL: "REN",
-  REFUND: "REF"
+  REFUND: "REF",
+  PAYMENT_LINK: "PAY"
 };
 
 /**

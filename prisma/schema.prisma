@@ -55,6 +55,7 @@ model Customer {
 
   invoices          Invoice[]
   returnProcessEvents ReturnProcessEvent[]
+  paymentLinks      PaymentLinkRequest[]
 
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -97,6 +98,26 @@ model ReturnProcessEvent {
   defectImageUrls String[] // up to 3 photos, only used when step=DEFECT_REPORTED and status=YES
 
   createdAt  DateTime @default(now()) // when this log entry was actually recorded
+}
+
+// One row per ad-hoc Razorpay payment link an admin generates for a customer
+// (e.g. to collect a fixed amount like ₹499), so the amounts requested over
+// time stay visible even after the link itself expires.
+model PaymentLinkRequest {
+  id            String   @id @default(cuid())
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id])
+
+  amount        Int      // INR
+  razorpayPaymentLinkId String? @unique // e.g. "plink_xxx", used to match incoming webhook events back to this row; nullable only for rows created before this field existed
+  shortUrl      String
+  expireBy      DateTime
+
+  status            String    @default("CREATED") // CREATED, PAID, EXPIRED, CANCELLED — flipped to PAID by the Razorpay webhook
+  razorpayPaymentId String?
+  paidAt            DateTime?
+
+  createdAt     DateTime @default(now())
 }
 
 // Atomic per-type-per-year sequence used to generate bill numbers like
