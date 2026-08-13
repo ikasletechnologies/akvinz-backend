@@ -26,7 +26,11 @@ export async function processRenewals(now: Date = new Date()): Promise<RenewalRe
       subscriptionStatus: "ACTIVE",
       subscriptionEnd: { lte: now },
       billingDay: { not: null },
-      subscriptionStart: { not: null }
+      subscriptionStart: { not: null },
+      // Autopay customers are billed by Razorpay itself (see the
+      // subscription.charged webhook) — advancing subscriptionEnd here too
+      // would double-count against that.
+      razorpaySubscriptionId: null
     }
   });
 

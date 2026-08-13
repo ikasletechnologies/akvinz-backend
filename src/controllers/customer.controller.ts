@@ -3,6 +3,7 @@ import { Prisma, CustomerDraft } from "@prisma/client";
 import { prisma } from "../config/prisma";
 import { buildFileUrl } from "../utils/fileUrl";
 import { createInvoice } from "../services/invoice.service";
+import { cancelAutopay } from "../services/autopay.service";
 
 type DraftUpsertResult =
   | { status: "customer_exists" }
@@ -260,6 +261,9 @@ export async function requestReturn(req: Request, res: Response): Promise<any> {
         ...(customer.paymentStatus === "COMPLETED" ? { paymentStatus: "PENDING_REFUND" } : {})
       }
     });
+
+    // Stop autopay from continuing to charge rent once the return is requested.
+    await cancelAutopay(customerId);
 
     res.json({ success: true, customer: updated });
   } catch (error: any) {

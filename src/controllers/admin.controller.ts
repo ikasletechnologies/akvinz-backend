@@ -22,28 +22,114 @@ export function login(req: Request, res: Response): any {
   res.json({ success: true, token });
 }
 
+// Builds a Prisma date-range filter for a `from`/`to` query pair (both
+// optional, either can be omitted). Returns undefined entirely when neither
+// is set, so callers can spread it into a `where` clause without adding an
+// empty {gte: undefined, lte: undefined} object. `to` is treated as
+// inclusive of the whole day.
+function dateRangeFilter(from?: string, to?: string): { gte?: Date; lte?: Date } | undefined {
+  if (!from && !to) return undefined;
+  const filter: { gte?: Date; lte?: Date } = {};
+  if (from) filter.gte = new Date(from);
+  if (to) {
+    const end = new Date(to);
+    end.setHours(23, 59, 59, 999);
+    filter.lte = end;
+  }
+  return filter;
+}
+
+// "Assets Received" has no single-query answer: it's the count of customers
+// whose MOST RECENT MACHINE_RECEIVED_WAREHOUSE return-process event is
+// COMPLETED. Fetches that step's events (small volume — one rental
+// company's returns) and reduces to the latest per customer in JS, since
+// Prisma has no "latest row per group" aggregate.
+async function countAssetsReceived(range?: { gte?: Date; lte?: Date }): Promise<number> {
+  const events = await prisma.returnProcessEvent.findMany({
+    where: { step: "MACHINE_RECEIVED_WAREHOUSE" },
+    orderBy: { createdAt: "desc" },
+    select: { customerId: true, status: true, eventDate: true }
+  });
+
+  const latestByCustomer = new Map<string, { status: string; eventDate: Date }>();
+  for (const event of events) {
+    if (!latestByCustomer.has(event.customerId)) {
+      latestByCustomer.set(event.customerId, { status: event.status, eventDate: event.eventDate });
+    }
+  }
+
+  let count = 0;
+  for (const { status, eventDate } of latestByCustomer.values()) {
+    if (status !== "COMPLETED") continue;
+    if (range?.gte && eventDate < range.gte) continue;
+    if (range?.lte && eventDate > range.lte) continue;
+    count += 1;
+  }
+  return count;
+}
+
 export async function getStats(req: Request, res: Response): Promise<any> {
   try {
-    const [totalCustomers, activeSubscriptions, pendingPayments, completedPayments, totalReturns, pendingRefunds, revenueAgg] = await Promise.all([
-      prisma.customer.count(),
-      prisma.customer.count({ where: { subscriptionStatus: "ACTIVE" } }),
-      prisma.customer.count({ where: { paymentStatus: "PENDING" } }),
-      prisma.customer.count({ where: { paymentStatus: "COMPLETED" } }),
-      prisma.customer.count({ where: { returnRequested: true } }),
-      prisma.customer.count({ where: { paymentStatus: "PENDING_REFUND" } }),
-      prisma.customer.aggregate({ _sum: { rentalAmount: true } })
+    const { from, to } = req.query as { from?: string; to?: string };
+    const range = dateRangeFilter(from, to);
+
+    const [
+      totalCustomers,
+      totalSubscribers,
+      twelveMonthCustomers,
+      twentyFourMonthCustomers,
+      rentalPaidInvoices,
+      rentalDue,
+      returnsInitiated,
+      refundedInvoices,
+      rentalRevenueAgg,
+      totalDepositsAgg,
+      assetsReceived
+    ] = await Promise.all([
+      prisma.customer.count({ where: { createdAt: range } }),
+      prisma.invoice.findMany({
+        where: { type: "SECURITY_DEPOSIT", status: "FUNDED", createdAt: range },
+        select: { customerId: true },
+        distinct: ["customerId"]
+      }),
+      prisma.customer.count({ where: { planDuration: 12, subscriptionStatus: "ACTIVE", createdAt: range } }),
+      prisma.customer.count({ where: { planDuration: 24, subscriptionStatus: "ACTIVE", createdAt: range } }),
+      prisma.invoice.findMany({
+        where: { type: "RENTAL", status: "FUNDED", createdAt: range },
+        select: { customerId: true },
+        distinct: ["customerId"]
+      }),
+      prisma.customer.count({
+        where: {
+          subscriptionStatus: "ACTIVE",
+          subscriptionEnd: { lt: new Date(), ...(range?.gte ? { gte: range.gte } : {}), ...(range?.lte ? { lte: range.lte } : {}) }
+        }
+      }),
+      prisma.customer.count({ where: { returnRequested: true, returnRequestedAt: range } }),
+      prisma.invoice.findMany({
+        where: { type: "REFUND", productType: "Security Deposit Refund", status: "REFUNDED", createdAt: range },
+        select: { customerId: true },
+        distinct: ["customerId"]
+      }),
+      prisma.invoice.aggregate({ where: { type: "RENTAL", status: "FUNDED", createdAt: range }, _sum: { amount: true } }),
+      prisma.invoice.aggregate({ where: { type: "SECURITY_DEPOSIT", status: "FUNDED", createdAt: range }, _sum: { amount: true } }),
+      countAssetsReceived(range)
     ]);
 
     res.json({
       success: true,
       stats: {
         totalCustomers,
-        activeSubscriptions,
-        pendingPayments,
-        completedPayments,
-        totalReturns,
-        pendingRefunds,
-        totalRentalRevenue: revenueAgg._sum.rentalAmount || 0
+        totalSubscribers: totalSubscribers.length,
+        twelveMonthCustomers,
+        twentyFourMonthCustomers,
+        rentalPaid: rentalPaidInvoices.length,
+        rentalDue,
+        returnsInitiated,
+        customersRefunded: refundedInvoices.length,
+        rentalRevenue: rentalRevenueAgg._sum.amount || 0,
+        totalDeposits: totalDepositsAgg._sum.amount || 0,
+        assetsReceived
       }
     });
   } catch (error: any) {

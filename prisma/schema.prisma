@@ -44,6 +44,13 @@ model Customer {
   lastPaymentDate    DateTime?
   billingDay         Int?      // day-of-month billing anchor (from subscriptionStart), used to compute every renewal so drift doesn't accumulate month over month
 
+  // Rental autopay (UPI Autopay / e-mandate via Razorpay Subscriptions).
+  // Once ACTIVE, Razorpay itself drives the billing cycle for this customer —
+  // see processRenewals, which skips anyone with a razorpaySubscriptionId.
+  razorpaySubscriptionId String? @unique
+  razorpayPlanId         String?
+  autopayStatus          String?  @default("NOT_SET") // NOT_SET, PENDING_AUTH, ACTIVE, FAILED, CANCELLED
+
   // Assigned product details, set manually by admin (not collected from customer)
   modelName          String?
   machineSerialNumber String?

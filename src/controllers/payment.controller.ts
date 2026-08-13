@@ -1,9 +1,9 @@
 import { Request, Response } from "express";
 import { prisma } from "../config/prisma";
 import { razorpay } from "../config/razorpay";
-import { verifyRazorpaySignature } from "../services/payment.service";
-import { calculateNextBillingDate } from "../utils/billing";
+import { verifyRazorpaySignature, verifyRazorpaySubscriptionSignature } from "../services/payment.service";
 import { createInvoice, securityDepositAmount } from "../services/invoice.service";
+import { activateRentalCycle, createAutopaySubscription } from "../services/autopay.service";
 
 export async function createOrder(req: Request, res: Response): Promise<any> {
   try {
@@ -114,33 +114,12 @@ export async function verifyRentalPayment(req: Request, res: Response): Promise<
     if (isValid) {
       let invoiceId: string | undefined;
       if (customerId) {
-        const newStart = new Date();
-        const billingDay = newStart.getDate();
-        const newEnd = calculateNextBillingDate(newStart, billingDay, "MONTHLY");
-
-        await prisma.customer.update({
-          where: { id: customerId },
-          data: {
-            rentalPlanDuration,
-            rentalAmount,
-            subscriptionStatus: "ACTIVE",
-            subscriptionStart: newStart,
-            subscriptionEnd: newEnd,
-            billingDay,
-            lastPaymentDate: newStart,
-            razorpayOrderId: razorpay_order_id,
-            razorpayPaymentId: razorpay_payment_id
-          }
-        });
-
-        const invoice = await createInvoice({
-          type: "RENTAL",
-          customerId,
-          productType: "Water Purifier",
-          amount: rentalAmount,
-          paymentMethod: "Razorpay",
+        const { invoice } = await activateRentalCycle(customerId, {
+          rentalPlanDuration,
+          rentalAmount,
           transactionId: razorpay_payment_id,
-          status: "FUNDED"
+          orderId: razorpay_order_id,
+          paymentMethod: "Razorpay"
         });
         invoiceId = invoice.id;
       }
@@ -148,6 +127,72 @@ export async function verifyRentalPayment(req: Request, res: Response): Promise<
     } else {
       return res.status(400).json({ success: false, message: "Invalid signature sent!" });
     }
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+// Step 1 of setting up rent autopay: creates the Razorpay Plan + Subscription
+// for this customer's chosen rental plan and returns the subscription id, so
+// the frontend can open Razorpay Checkout in subscription mode (the customer
+// authorizes the mandate via GPay/PhonePe/Paytm/any UPI app, card, or NACH).
+export async function setupAutopay(req: Request, res: Response): Promise<any> {
+  try {
+    const { customerId, rentalPlanDuration, rentalAmount } = req.body;
+
+    if (!customerId || !rentalPlanDuration || !rentalAmount) {
+      return res.status(400).json({ success: false, message: "customerId, rentalPlanDuration and rentalAmount are required" });
+    }
+
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    const subscription = await createAutopaySubscription(customerId, rentalPlanDuration, rentalAmount);
+    res.json({ success: true, subscriptionId: subscription.id });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+// Step 2: called once the customer authorizes the mandate in Razorpay
+// Checkout. This first authorization charge activates the subscription the
+// same way a manual rental payment does (activateRentalCycle) — every charge
+// after this one arrives automatically via the subscription.charged webhook.
+export async function verifyAutopaySetup(req: Request, res: Response): Promise<any> {
+  try {
+    const {
+      customerId,
+      rentalPlanDuration,
+      rentalAmount,
+      razorpay_payment_id,
+      razorpay_subscription_id,
+      razorpay_signature
+    } = req.body;
+
+    const isValid = verifyRazorpaySubscriptionSignature(razorpay_subscription_id, razorpay_payment_id, razorpay_signature);
+    if (!isValid) {
+      return res.status(400).json({ success: false, message: "Invalid signature sent!" });
+    }
+
+    if (!customerId) {
+      return res.status(400).json({ success: false, message: "customerId is required" });
+    }
+
+    await prisma.customer.update({
+      where: { id: customerId },
+      data: { autopayStatus: "ACTIVE" }
+    });
+
+    const { invoice } = await activateRentalCycle(customerId, {
+      rentalPlanDuration,
+      rentalAmount,
+      transactionId: razorpay_payment_id,
+      paymentMethod: "Razorpay"
+    });
+
+    return res.json({ success: true, message: "Autopay set up successfully", invoiceId: invoice.id });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

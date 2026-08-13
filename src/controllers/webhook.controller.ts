@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { prisma } from "../config/prisma";
 import { env } from "../config/env";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
+import { createInvoice } from "../services/invoice.service";
 
 // Razorpay calls this with the raw request body (see app.ts, which mounts
 // this route with express.raw() ahead of the global express.json()) so the
@@ -38,6 +39,85 @@ export async function razorpayWebhook(req: Request, res: Response): Promise<any>
       if (record) {
         await markPaymentLinkPaid(record.id, paymentEntity?.id ?? null);
       }
+    }
+  }
+
+  // Rental autopay (UPI Autopay / e-mandate) lifecycle — see autopay.service.ts
+  // for how the subscription is first created and authorized.
+  if (payload.event === "subscription.activated") {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (subEntity?.id) {
+      await prisma.customer.updateMany({
+        where: { razorpaySubscriptionId: subEntity.id },
+        data: { autopayStatus: "ACTIVE" }
+      });
+    }
+  }
+
+  if (payload.event === "subscription.charged") {
+    const subEntity = payload.payload?.subscription?.entity;
+    const paymentEntity = payload.payload?.payment?.entity;
+
+    if (subEntity?.id && paymentEntity?.id) {
+      const customer = await prisma.customer.findUnique({
+        where: { razorpaySubscriptionId: subEntity.id }
+      });
+
+      if (customer) {
+        // Idempotent: Razorpay can redeliver the same webhook, and the
+        // client-side verify call may have already recorded this same
+        // charge as the mandate's first payment.
+        const alreadyRecorded = await prisma.invoice.findFirst({
+          where: { transactionId: paymentEntity.id }
+        });
+
+        if (!alreadyRecorded) {
+          const currentEnd = subEntity.current_end ? new Date(subEntity.current_end * 1000) : null;
+
+          await prisma.customer.update({
+            where: { id: customer.id },
+            data: {
+              lastPaymentDate: new Date(),
+              subscriptionStatus: "ACTIVE",
+              autopayStatus: "ACTIVE",
+              ...(currentEnd ? { subscriptionEnd: currentEnd } : {})
+            }
+          });
+
+          await createInvoice({
+            type: "RENTAL",
+            customerId: customer.id,
+            productType: "Water Purifier",
+            amount: Math.round((paymentEntity.amount ?? 0) / 100),
+            paymentMethod: "Razorpay",
+            transactionId: paymentEntity.id,
+            status: "FUNDED"
+          });
+        }
+      }
+    }
+  }
+
+  // Razorpay's event for a recurring charge attempt that failed after
+  // retries — the manual "Generate Payment Link" action in the admin
+  // dashboard remains the fallback for collecting that month's rent.
+  if (payload.event === "subscription.halted") {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (subEntity?.id) {
+      await prisma.customer.updateMany({
+        where: { razorpaySubscriptionId: subEntity.id },
+        data: { autopayStatus: "FAILED" }
+      });
+    }
+  }
+
+  if (payload.event === "subscription.cancelled" || payload.event === "subscription.completed") {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (subEntity?.id) {
+      await prisma.customer.updateMany({
+        where: { razorpaySubscriptionId: subEntity.id },
+        data: { autopayStatus: "CANCELLED" }
+      });
     }
   }
 
