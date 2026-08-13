@@ -53,6 +53,13 @@ model Customer {
   returnRequestedAt  DateTime?
   refundAmount       Int?      // Final refund decided by admin after inspecting the returned product
 
+  // Bank details the customer provides at return-request time, so the admin
+  // has where to send the refund once refundAmount is fixed.
+  refundBankAccountHolderName String?
+  refundBankName               String?
+  refundBankIfscCode           String?
+  refundBankAccountNumber      String?
+
   invoices          Invoice[]
   returnProcessEvents ReturnProcessEvent[]
   paymentLinks      PaymentLinkRequest[]

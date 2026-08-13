@@ -215,10 +215,25 @@ export async function getCustomerByMobile(req: Request<{ mobileNumber: string }>
 
 export async function requestReturn(req: Request, res: Response): Promise<any> {
   try {
-    const { customerId } = req.body;
+    const {
+      customerId,
+      bankAccountHolderName,
+      bankName,
+      bankIfscCode,
+      bankAccountNumber,
+      bankAccountNumberConfirm
+    } = req.body;
 
     if (!customerId) {
       return res.status(400).json({ success: false, message: "customerId is required" });
+    }
+
+    if (!bankAccountHolderName || !bankName || !bankIfscCode || !bankAccountNumber) {
+      return res.status(400).json({ success: false, message: "Bank account details are required to process the refund" });
+    }
+
+    if (bankAccountNumber !== bankAccountNumberConfirm) {
+      return res.status(400).json({ success: false, message: "Account number and confirmation do not match" });
     }
 
     const customer = await prisma.customer.findUnique({ where: { id: customerId } });
@@ -236,6 +251,10 @@ export async function requestReturn(req: Request, res: Response): Promise<any> {
         subscriptionStatus: "CANCELLED",
         returnRequested: true,
         returnRequestedAt: new Date(),
+        refundBankAccountHolderName: bankAccountHolderName,
+        refundBankName: bankName,
+        refundBankIfscCode: bankIfscCode,
+        refundBankAccountNumber: bankAccountNumber,
         // A completed advance payment becomes refundable once the product is being returned;
         // the admin fixes the final refundAmount after the technician reports its condition.
         ...(customer.paymentStatus === "COMPLETED" ? { paymentStatus: "PENDING_REFUND" } : {})

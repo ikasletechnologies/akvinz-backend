@@ -11,10 +11,12 @@ function required(name: string): string {
 }
 
 export const env = {
+  nodeEnv: process.env.NODE_ENV || "development",
   port: process.env.PORT || 5000,
   databaseUrl: required("DATABASE_URL"),
   uploadDir: required("UPLOAD_DIR"),
   baseUrl: required("BASE_URL"),
+  corsOrigin: process.env.CORS_ORIGIN || "*",
   twilio: {
     accountSid: required("TWILIO_ACCOUNT_SID"),
     authToken: required("TWILIO_AUTH_TOKEN"),

@@ -205,8 +205,19 @@ export async function updateCustomer(req: Request, res: Response): Promise<any> 
 }
 
 export async function deleteCustomer(req: Request, res: Response): Promise<any> {
+  const customerId = req.params.id as string;
   try {
-    await prisma.customer.delete({ where: { id: req.params.id as string } });
+    // Deleting a customer also permanently erases their invoices, payment
+    // links, payouts, and return-process history — there's no FK cascade in
+    // the schema (invoices are normally kept as permanent billing records),
+    // so it's done explicitly here in one transaction.
+    await prisma.$transaction([
+      prisma.invoice.deleteMany({ where: { customerId } }),
+      prisma.returnProcessEvent.deleteMany({ where: { customerId } }),
+      prisma.paymentLinkRequest.deleteMany({ where: { customerId } }),
+      prisma.customerPayout.deleteMany({ where: { customerId } }),
+      prisma.customer.delete({ where: { id: customerId } }),
+    ]);
     res.json({ success: true, message: "Customer deleted" });
   } catch (error: any) {
     if (error.code === "P2025") {

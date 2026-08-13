@@ -9,7 +9,7 @@ import { razorpayWebhook } from "./controllers/webhook.controller";
 
 const app = express();
 
-app.use(cors());
+app.use(cors({ origin: env.corsOrigin }));
 app.use(helmet());
 app.use(compression());
 app.use(morgan("dev"));
