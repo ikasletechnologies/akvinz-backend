@@ -19,7 +19,42 @@ const STATUS_COLORS: Record<string, string> = {
   REFUNDED: "#2563eb"
 };
 
-const TERMS_AND_CONDITIONS: { label: string; text: string }[] = [
+type TermItem = { label: string; text: string };
+
+const SECURITY_DEPOSIT_TERMS: TermItem[] = [
+  {
+    label: "Security Deposit",
+    text: "Refundable subject to the terms of the Principal Subscription Agreement and successful, damage-free retrieval of the product by the Company."
+  },
+  {
+    label: "Monthly Rental",
+    text: "Payable in advance as per the selected subscription plan. Charges accrue continuously as long as the product remains installed at the Subscriber's premises."
+  },
+  {
+    label: "Product Ownership",
+    text: "The product and all ancillary hardware remain the exclusive property of AKVINZ. The Subscriber obtains only a non-transferable, temporary right to use the asset."
+  },
+  {
+    label: "Product Care & Boundaries",
+    text: "The Subscriber must operate the machine strictly according to provided guidelines, ensuring stable power inputs and regular raw water inflow. Internal alterations, housing component breakage, or un-notified relocation will trigger immediate penal liabilities under Section 6 and Section 8 of the Principal Agreement."
+  },
+  {
+    label: "Maintenance & Service",
+    text: "Routine maintenance and eligible component replacements are provided exclusively by the Company, subject to the conditions specified in the Subscription Agreement."
+  },
+  {
+    label: "Cancellation & Refund",
+    text: "Requires a 30-day prior written notice. The remaining eligible Security Deposit will be processed and refunded within 10 to 15 working days following successful, damage-free product retrieval."
+  },
+  {
+    label: "Agreement Acceptance",
+    text: "Payment of this deposit and digital/OTP confirmation of the Subscription Agreement constitutes complete, absolute acceptance of these Terms & Conditions."
+  }
+];
+
+// Fallback for invoice types that don't have their own tailored wording yet
+// (RENTAL, REFUND, PAYMENT_LINK).
+const DEFAULT_TERMS: TermItem[] = [
   {
     label: "Security Deposit",
     text: "The Security Deposit is refundable, subject to the terms and conditions of the Subscription Agreement and successful, damage-free product retrieval."
@@ -49,6 +84,10 @@ const TERMS_AND_CONDITIONS: { label: string; text: string }[] = [
     text: "Payment and digital/OTP acceptance of the Subscription Agreement constitute the Subscriber's acceptance of the applicable Terms & Conditions."
   }
 ];
+
+function termsForInvoiceType(type: string): TermItem[] {
+  return type === "SECURITY_DEPOSIT" ? SECURITY_DEPOSIT_TERMS : DEFAULT_TERMS;
+}
 
 // pdfkit's built-in Helvetica only supports WinAnsiEncoding, which has no
 // Rupee sign (U+20B9) glyph — it renders as a garbled superscript instead of
@@ -153,7 +192,7 @@ export async function renderInvoicePdf(invoice: Invoice, customer: Customer): Pr
   const footerHeight = 14 + company.address.length * 12 + 12;
   const bottomLimit = doc.page.height - doc.page.margins.bottom;
 
-  TERMS_AND_CONDITIONS.forEach(({ label, text }) => {
+  termsForInvoiceType(invoice.type).forEach(({ label, text }) => {
     // If the next item plus the footer wouldn't fit on this page, start a
     // fresh page rather than letting pdfkit silently clip content past the
     // page boundary.
