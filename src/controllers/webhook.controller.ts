@@ -4,6 +4,7 @@ import { prisma } from "../config/prisma";
 import { env } from "../config/env";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { createInvoice } from "../services/invoice.service";
+import { finalizeRegistration } from "../services/registration.service";
 
 // Razorpay calls this with the raw request body (see app.ts, which mounts
 // this route with express.raw() ahead of the global express.json()) so the
@@ -39,6 +40,21 @@ export async function razorpayWebhook(req: Request, res: Response): Promise<any>
       if (record) {
         await markPaymentLinkPaid(record.id, paymentEntity?.id ?? null);
       }
+    }
+  }
+
+  // Registration security deposit — server-to-server confirmation that a
+  // draft's order was paid, independent of whether the customer's browser
+  // stays connected long enough to call /verify-payment itself. Requires
+  // draftId to have been attached to the order's notes at creation time
+  // (customerForm.tsx's handlePayment -> /create-order).
+  if (payload.event === "order.paid") {
+    const orderEntity = payload.payload?.order?.entity;
+    const paymentEntity = payload.payload?.payment?.entity;
+    const draftId = orderEntity?.notes?.draftId;
+
+    if (draftId && orderEntity?.id && paymentEntity?.id) {
+      await finalizeRegistration(draftId, orderEntity.id, paymentEntity.id);
     }
   }
 

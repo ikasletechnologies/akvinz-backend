@@ -2,12 +2,12 @@ import { Request, Response } from "express";
 import { prisma } from "../config/prisma";
 import { razorpay } from "../config/razorpay";
 import { verifyRazorpaySignature, verifyRazorpaySubscriptionSignature } from "../services/payment.service";
-import { createInvoice, securityDepositAmount } from "../services/invoice.service";
 import { activateRentalCycle, createAutopaySubscription } from "../services/autopay.service";
+import { finalizeRegistration } from "../services/registration.service";
 
 export async function createOrder(req: Request, res: Response): Promise<any> {
   try {
-    const { amount } = req.body;
+    const { amount, notes } = req.body;
 
     if (!amount) {
       return res.status(400).json({ success: false, message: "Amount is required" });
@@ -16,7 +16,11 @@ export async function createOrder(req: Request, res: Response): Promise<any> {
     const options = {
       amount: amount * 100, // amount in smallest currency unit (paise)
       currency: "INR",
-      receipt: `receipt_order_${Date.now()}`
+      receipt: `receipt_order_${Date.now()}`,
+      // Attached so the order.paid webhook can identify what this order was
+      // for (e.g. { draftId }) without depending on the customer's browser
+      // to report back — see webhook.controller.ts.
+      notes: notes || {}
     };
 
     const order = await razorpay.orders.create(options);
@@ -31,6 +35,11 @@ export async function createOrder(req: Request, res: Response): Promise<any> {
 // under Customers until the security-deposit payment is verified here. If
 // the signature is invalid (payment failed/cancelled/tampered), the Draft is
 // left untouched so the person can be followed up with or retry later.
+//
+// finalizeRegistration is idempotent and shared with the order.paid webhook
+// (webhook.controller.ts) — if that already finished this same payment
+// (e.g. the customer's browser closed right after paying), this just reports
+// back the same customer/invoice instead of erroring or double-creating.
 export async function verifyPayment(req: Request, res: Response): Promise<any> {
   try {
     const { draftId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
@@ -44,59 +53,24 @@ export async function verifyPayment(req: Request, res: Response): Promise<any> {
       return res.status(400).json({ success: false, message: "draftId is required" });
     }
 
-    const draft = await prisma.customerDraft.findUnique({ where: { id: draftId } });
-    if (!draft) {
+    const result = await finalizeRegistration(draftId, razorpay_order_id, razorpay_payment_id);
+
+    if (result.status === "draft_not_found") {
       return res.status(404).json({ success: false, message: "Registration draft not found. Please fill the form again." });
     }
-    if (!draft.fullName || !draft.mobileNumber || !draft.email || !draft.addressLine1 || !draft.city || !draft.state || !draft.pincode || !draft.planDuration || !draft.houseType) {
+    if (result.status === "incomplete") {
       return res.status(400).json({ success: false, message: "Registration details are incomplete." });
     }
-
-    // Guard against the same draft racing to pay twice (e.g. two tabs), or
-    // the mobile number having been registered elsewhere in the meantime.
-    const existingCustomer = await prisma.customer.findUnique({ where: { mobileNumber: draft.mobileNumber } });
-    if (existingCustomer) {
+    if (result.status === "mobile_conflict") {
       return res.status(400).json({ success: false, message: "A customer with this mobile number is already registered." });
     }
 
-    const customer = await prisma.customer.create({
-      data: {
-        fullName: draft.fullName,
-        mobileNumber: draft.mobileNumber,
-        email: draft.email,
-        addressLine1: draft.addressLine1,
-        addressLine2: draft.addressLine2,
-        city: draft.city,
-        state: draft.state,
-        pincode: draft.pincode,
-        planDuration: draft.planDuration,
-        houseType: draft.houseType,
-        aadharFrontImageUrl: draft.aadharFrontImageUrl,
-        aadharBackImageUrl: draft.aadharBackImageUrl,
-        panFrontImageUrl: draft.panFrontImageUrl,
-        panBackImageUrl: draft.panBackImageUrl,
-        residenceDocUrl: draft.residenceDocUrl,
-        paymentStatus: "COMPLETED",
-        razorpayOrderId: razorpay_order_id,
-        razorpayPaymentId: razorpay_payment_id
-      }
+    return res.json({
+      success: true,
+      message: "Payment verified successfully",
+      customerId: result.customer!.id,
+      invoiceId: result.invoiceId ?? undefined
     });
-
-    // The draft has now become a real customer, so it must not keep
-    // lingering around as a separate "incomplete registration".
-    await prisma.customerDraft.delete({ where: { id: draftId } });
-
-    const invoice = await createInvoice({
-      type: "SECURITY_DEPOSIT",
-      customerId: customer.id,
-      productType: "Refundable Security Deposit",
-      amount: securityDepositAmount(customer.planDuration),
-      paymentMethod: "Razorpay",
-      transactionId: razorpay_payment_id,
-      status: "FUNDED"
-    });
-
-    return res.json({ success: true, message: "Payment verified successfully", customerId: customer.id, invoiceId: invoice.id });
   } catch (error: any) {
     if (error.code === 'P2002') {
       return res.status(400).json({ success: false, message: "A customer with this mobile number or email is already registered." });
