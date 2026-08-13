@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middlewares/requireAdmin";
 import { upload } from "../middlewares/upload.middleware";
-import { login, getStats, listCustomers, getCustomer, updateCustomer, deleteCustomer, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts } from "../controllers/admin.controller";
+import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts } from "../controllers/admin.controller";
 import { downloadInvoicePdf, listCustomerInvoices } from "../controllers/invoice.controller";
 import { listReturnEvents, createReturnEvent } from "../controllers/returnProcess.controller";
 
@@ -10,6 +10,18 @@ const router = Router();
 router.post("/admin/login", login);
 router.get("/admin/stats", requireAdmin, getStats);
 router.get("/admin/customers", requireAdmin, listCustomers);
+router.post(
+  "/admin/customers",
+  requireAdmin,
+  upload.fields([
+    { name: "aadharFrontFile", maxCount: 1 },
+    { name: "aadharBackFile", maxCount: 1 },
+    { name: "panFrontFile", maxCount: 1 },
+    { name: "panBackFile", maxCount: 1 },
+    { name: "residenceFile", maxCount: 1 }
+  ]),
+  createCustomer
+);
 router.get("/admin/customers/:id", requireAdmin, getCustomer);
 router.patch("/admin/customers/:id", requireAdmin, updateCustomer);
 router.delete("/admin/customers/:id", requireAdmin, deleteCustomer);

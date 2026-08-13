@@ -6,6 +6,7 @@ import { razorpay } from "../config/razorpay";
 import { processRenewals } from "../services/billing.service";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
+import { buildFileUrl } from "../utils/fileUrl";
 
 export function login(req: Request, res: Response): any {
   const { email, password } = req.body;
@@ -227,6 +228,57 @@ export async function deleteDraft(req: Request, res: Response): Promise<any> {
   } catch (error: any) {
     if (error.code === "P2025") {
       return res.status(404).json({ success: false, message: "Draft not found" });
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+// Lets an admin add a customer directly — no OTP, no draft, no payment
+// flow. Used for entries that happened outside the normal online journey
+// (e.g. an offline/cash signup). paymentStatus is set to COMPLETED since
+// there's no real online payment to leave PENDING against; PENDING isn't a
+// selectable option in the admin edit form's Payment Status dropdown, so
+// leaving it there would strand the customer with no way to change it via
+// the UI.
+export async function createCustomer(req: Request, res: Response): Promise<any> {
+  try {
+    const {
+      fullName, mobileNumber, email,
+      addressLine1, addressLine2, city, state, pincode,
+      planDuration, houseType
+    } = req.body;
+
+    if (!fullName || !mobileNumber || !email || !addressLine1 || !city || !state || !pincode || !planDuration || !houseType) {
+      return res.status(400).json({ success: false, message: "Please fill in all required fields." });
+    }
+
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+
+    const customer = await prisma.customer.create({
+      data: {
+        fullName,
+        mobileNumber,
+        email,
+        addressLine1,
+        addressLine2: addressLine2 || null,
+        city,
+        state,
+        pincode,
+        planDuration: parseInt(planDuration),
+        houseType,
+        paymentStatus: "COMPLETED",
+        aadharFrontImageUrl: files ? buildFileUrl(files, "aadharFrontFile") : null,
+        aadharBackImageUrl: files ? buildFileUrl(files, "aadharBackFile") : null,
+        panFrontImageUrl: files ? buildFileUrl(files, "panFrontFile") : null,
+        panBackImageUrl: files ? buildFileUrl(files, "panBackFile") : null,
+        residenceDocUrl: files ? buildFileUrl(files, "residenceFile") : null
+      }
+    });
+
+    res.json({ success: true, customer });
+  } catch (error: any) {
+    if (error.code === "P2002") {
+      return res.status(400).json({ success: false, message: "A customer with this mobile number or email already exists." });
     }
     res.status(500).json({ success: false, message: error.message });
   }
