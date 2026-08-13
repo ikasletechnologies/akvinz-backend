@@ -92,19 +92,14 @@ export async function getStats(req: Request, res: Response): Promise<any> {
         select: { customerId: true },
         distinct: ["customerId"]
       }),
-      prisma.customer.count({ where: { planDuration: 12, subscriptionStatus: "ACTIVE", createdAt: range } }),
-      prisma.customer.count({ where: { planDuration: 24, subscriptionStatus: "ACTIVE", createdAt: range } }),
+      prisma.customer.count({ where: { planDuration: 12, subscriptionStatus: { in: ["ACTIVE", "PENDING_DUE"] }, createdAt: range } }),
+      prisma.customer.count({ where: { planDuration: 24, subscriptionStatus: { in: ["ACTIVE", "PENDING_DUE"] }, createdAt: range } }),
       prisma.invoice.findMany({
         where: { type: "RENTAL", status: "FUNDED", createdAt: range },
         select: { customerId: true },
         distinct: ["customerId"]
       }),
-      prisma.customer.count({
-        where: {
-          subscriptionStatus: "ACTIVE",
-          subscriptionEnd: { lt: new Date(), ...(range?.gte ? { gte: range.gte } : {}), ...(range?.lte ? { lte: range.lte } : {}) }
-        }
-      }),
+      prisma.customer.count({ where: { subscriptionStatus: "PENDING_DUE", subscriptionEnd: range } }),
       prisma.customer.count({ where: { returnRequested: true, returnRequestedAt: range } }),
       prisma.invoice.findMany({
         where: { type: "REFUND", productType: "Security Deposit Refund", status: "REFUNDED", createdAt: range },

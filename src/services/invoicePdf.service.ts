@@ -19,6 +19,37 @@ const STATUS_COLORS: Record<string, string> = {
   REFUNDED: "#2563eb"
 };
 
+const TERMS_AND_CONDITIONS: { label: string; text: string }[] = [
+  {
+    label: "Security Deposit",
+    text: "The Security Deposit is refundable, subject to the terms and conditions of the Subscription Agreement and successful, damage-free product retrieval."
+  },
+  {
+    label: "Monthly Rental",
+    text: "The applicable monthly rental amount is payable as per the selected subscription plan and continues while the Product remains installed at the Subscriber's premises."
+  },
+  {
+    label: "Product Ownership",
+    text: "The Product remains the exclusive property of AKVINZ. The Subscriber receives only a non-transferable right to use the Product at the registered address."
+  },
+  {
+    label: "Product Care",
+    text: "The Subscriber shall not tamper with, modify, dismantle, relocate, or allow unauthorized persons to service or move the Product."
+  },
+  {
+    label: "Maintenance & Service",
+    text: "Routine maintenance and eligible component replacements are provided by the Company subject to the conditions specified in the Subscription Agreement."
+  },
+  {
+    label: "Cancellation & Refund",
+    text: "Cancellation requires 30 days’ prior notice. The eligible remaining Security Deposit will be refunded within 10 to 15 working days after successful and damage-free product retrieval."
+  },
+  {
+    label: "Agreement Acceptance",
+    text: "Payment and digital/OTP acceptance of the Subscription Agreement constitute the Subscriber's acceptance of the applicable Terms & Conditions."
+  }
+];
+
 // pdfkit's built-in Helvetica only supports WinAnsiEncoding, which has no
 // Rupee sign (U+20B9) glyph — it renders as a garbled superscript instead of
 // silently failing. Suffixing "INR" (as the reference receipt does) avoids
@@ -106,11 +137,46 @@ export async function renderInvoicePdf(invoice: Invoice, customer: Customer): Pr
   ry += 20;
   doc.fillColor("#111827").font("Helvetica-Bold").fontSize(26).text(formatINR(invoice.amount), rightX, ry, { width: rightColWidth, align: "right" });
   ry += 40;
-  doc.fillColor("#9ca3af").font("Helvetica").fontSize(9).text(invoice.reason || "No reason available.", rightX, ry, { width: rightColWidth, align: "right" });
+  doc.fillColor("#9ca3af").font("Helvetica").fontSize(9);
+  doc.text(invoice.reason || "No reason available.", rightX, ry, { width: rightColWidth, align: "right" });
+  ry += doc.heightOfString(invoice.reason || "No reason available.", { width: rightColWidth });
 
-  // Footer — kept well clear of the bottom margin so pdfkit never
-  // auto-paginates the last line onto a spurious second page.
-  const footerY = doc.page.height - 160;
+  // Terms & Conditions — below whichever column (left fields / right
+  // amount+reason) ends up taller. Each line's height is measured so the
+  // footer below it is always positioned after the real content, never
+  // overlapping it regardless of how long the wrapped text runs.
+  let ty = Math.max(y + 26, ry) + 30;
+  doc.fillColor("#111827").font("Helvetica-Bold").fontSize(10);
+  doc.text("Terms & Conditions", margin, ty, { width: contentWidth });
+  ty += doc.heightOfString("Terms & Conditions", { width: contentWidth }) + 10;
+
+  const footerHeight = 14 + company.address.length * 12 + 12;
+  const bottomLimit = doc.page.height - doc.page.margins.bottom;
+
+  TERMS_AND_CONDITIONS.forEach(({ label, text }) => {
+    // If the next item plus the footer wouldn't fit on this page, start a
+    // fresh page rather than letting pdfkit silently clip content past the
+    // page boundary.
+    const labelText = `${label}:`;
+    doc.font("Helvetica-Bold").fontSize(8.5);
+    const labelHeight = doc.heightOfString(labelText, { width: contentWidth });
+    doc.font("Helvetica").fontSize(8);
+    const bodyHeight = doc.heightOfString(text, { width: contentWidth });
+    const itemHeight = labelHeight + bodyHeight + 8;
+
+    if (ty + itemHeight + footerHeight > bottomLimit) {
+      doc.addPage();
+      ty = margin;
+    }
+
+    doc.fillColor("#111827").font("Helvetica-Bold").fontSize(8.5).text(labelText, margin, ty, { width: contentWidth });
+    ty += labelHeight;
+    doc.fillColor("#6b7280").font("Helvetica").fontSize(8).text(text, margin, ty, { width: contentWidth });
+    ty += bodyHeight + 8;
+  });
+
+  // Footer
+  const footerY = ty + 16;
   doc.moveTo(margin, footerY).lineTo(pageWidth - margin, footerY).strokeColor("#e5e7eb").lineWidth(1).stroke();
 
   doc.fillColor("#6b7280").font("Helvetica").fontSize(8);

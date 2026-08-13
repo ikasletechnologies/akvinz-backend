@@ -242,7 +242,7 @@ export async function requestReturn(req: Request, res: Response): Promise<any> {
       return res.status(404).json({ success: false, message: "Customer not found" });
     }
 
-    if (customer.subscriptionStatus !== "ACTIVE") {
+    if (customer.subscriptionStatus !== "ACTIVE" && customer.subscriptionStatus !== "PENDING_DUE") {
       return res.status(400).json({ success: false, message: "No active subscription to discontinue" });
     }
 
