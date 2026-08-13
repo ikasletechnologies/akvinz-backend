@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middlewares/requireAdmin";
 import { upload } from "../middlewares/upload.middleware";
-import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts } from "../controllers/admin.controller";
+import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, uploadCustomerDocuments, deleteCustomerDocument, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts } from "../controllers/admin.controller";
 import { downloadInvoicePdf, listCustomerInvoices } from "../controllers/invoice.controller";
 import { listReturnEvents, createReturnEvent } from "../controllers/returnProcess.controller";
 
@@ -25,6 +25,19 @@ router.post(
 router.get("/admin/customers/:id", requireAdmin, getCustomer);
 router.patch("/admin/customers/:id", requireAdmin, updateCustomer);
 router.delete("/admin/customers/:id", requireAdmin, deleteCustomer);
+router.post(
+  "/admin/customers/:id/documents",
+  requireAdmin,
+  upload.fields([
+    { name: "aadharFrontFile", maxCount: 1 },
+    { name: "aadharBackFile", maxCount: 1 },
+    { name: "panFrontFile", maxCount: 1 },
+    { name: "panBackFile", maxCount: 1 },
+    { name: "residenceFile", maxCount: 1 }
+  ]),
+  uploadCustomerDocuments
+);
+router.delete("/admin/customers/:id/documents/:field", requireAdmin, deleteCustomerDocument);
 router.get("/admin/drafts", requireAdmin, listDrafts);
 router.delete("/admin/drafts/:id", requireAdmin, deleteDraft);
 router.post("/admin/process-renewals", requireAdmin, triggerRenewals);

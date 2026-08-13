@@ -284,6 +284,69 @@ export async function createCustomer(req: Request, res: Response): Promise<any> 
   }
 }
 
+// Upload field name -> Customer column, shared by both document endpoints
+// below and matching the same upload field names /register already uses.
+const DOCUMENT_UPLOAD_FIELDS: Record<string, string> = {
+  aadharFrontFile: "aadharFrontImageUrl",
+  aadharBackFile: "aadharBackImageUrl",
+  panFrontFile: "panFrontImageUrl",
+  panBackFile: "panBackImageUrl",
+  residenceFile: "residenceDocUrl"
+};
+const DOCUMENT_DB_FIELDS = new Set(Object.values(DOCUMENT_UPLOAD_FIELDS));
+
+// Lets an admin upload or replace a customer's KYC documents after the
+// fact (e.g. a blurry scan, or one collected later than the others).
+// Accepts any subset of the 5 file fields — only the ones present are
+// updated, the rest are left as-is.
+export async function uploadCustomerDocuments(req: Request, res: Response): Promise<any> {
+  try {
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+    if (!files || Object.keys(files).length === 0) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    const data: Record<string, string> = {};
+    for (const [uploadField, dbField] of Object.entries(DOCUMENT_UPLOAD_FIELDS)) {
+      const url = buildFileUrl(files, uploadField);
+      if (url) data[dbField] = url;
+    }
+
+    const customer = await prisma.customer.update({
+      where: { id: req.params.id as string },
+      data
+    });
+
+    res.json({ success: true, customer });
+  } catch (error: any) {
+    if (error.code === "P2025") {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function deleteCustomerDocument(req: Request, res: Response): Promise<any> {
+  try {
+    const field = req.params.field as string;
+    if (!DOCUMENT_DB_FIELDS.has(field)) {
+      return res.status(400).json({ success: false, message: "Invalid document field" });
+    }
+
+    const customer = await prisma.customer.update({
+      where: { id: req.params.id as string },
+      data: { [field]: null }
+    });
+
+    res.json({ success: true, customer });
+  } catch (error: any) {
+    if (error.code === "P2025") {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
 export async function getCustomer(req: Request, res: Response): Promise<any> {
   try {
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
