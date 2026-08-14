@@ -160,7 +160,10 @@ model CustomerPayout {
 
   amount      Int      // INR
   reason      String
-  proofUrl    String   // screenshot/receipt proving the payment was actually sent
+  // Screenshot/receipt proving the payment was actually sent. Nullable at
+  // the DB level only because payouts recorded before this field existed
+  // have none — createPayout still requires it for every new payout.
+  proofUrl    String?
 
   createdAt   DateTime @default(now())
 }
