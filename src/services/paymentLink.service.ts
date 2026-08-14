@@ -22,18 +22,12 @@ export async function markPaymentLinkPaid(recordId: string, transactionId: strin
 
   const paymentMethod = transactionId ? "Razorpay" : "Manual";
 
-  await createInvoice({
-    type: "PAYMENT_LINK",
-    customerId: record.customerId,
-    productType: "Payment Link Collection",
-    amount: record.amount,
-    paymentMethod,
-    transactionId,
-    status: "FUNDED"
-  });
-
   // A "Change Plan" top-up link paying off applies the plan change right
   // here — no separate manual "Confirm & Apply Plan Change" click needed.
+  // applyPlanChange records its own (more specific) Security Deposit
+  // Top-up/Refund receipt, so the generic "Payment Link Collection" one
+  // below is skipped for these — otherwise the same payment would show up
+  // as two receipts.
   if (record.planChangeTargetDuration) {
     await applyPlanChange({
       customerId: record.customerId,
@@ -41,6 +35,16 @@ export async function markPaymentLinkPaid(recordId: string, transactionId: strin
       amountHandled: record.amount,
       paymentMethod,
       transactionId
+    });
+  } else {
+    await createInvoice({
+      type: "PAYMENT_LINK",
+      customerId: record.customerId,
+      productType: "Payment Link Collection",
+      amount: record.amount,
+      paymentMethod,
+      transactionId,
+      status: "FUNDED"
     });
   }
 
