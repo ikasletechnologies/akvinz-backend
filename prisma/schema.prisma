@@ -160,6 +160,7 @@ model CustomerPayout {
 
   amount      Int      // INR
   reason      String
+  proofUrl    String   // screenshot/receipt proving the payment was actually sent
 
   createdAt   DateTime @default(now())
 }

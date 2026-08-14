@@ -45,7 +45,12 @@ router.post("/admin/process-renewals", requireAdmin, triggerRenewals);
 router.post("/admin/customers/:id/payment-link", requireAdmin, createPaymentLink);
 router.get("/admin/customers/:id/payment-links", requireAdmin, listCustomerPaymentLinks);
 router.post("/admin/payment-links/:linkId/mark-paid", requireAdmin, markPaymentLinkAsPaid);
-router.post("/admin/customers/:id/payout", requireAdmin, createPayout);
+router.post(
+  "/admin/customers/:id/payout",
+  requireAdmin,
+  upload.fields([{ name: "proofFile", maxCount: 1 }]),
+  createPayout
+);
 router.get("/admin/customers/:id/payouts", requireAdmin, listCustomerPayouts);
 router.post("/admin/customers/:id/change-plan", requireAdmin, changePlan);
 router.get("/admin/customers/:id/invoices", requireAdmin, listCustomerInvoices);

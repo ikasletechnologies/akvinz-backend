@@ -6,6 +6,7 @@ import { razorpay } from "../config/razorpay";
 import { processRenewals } from "../services/billing.service";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
+import { createInvoice } from "../services/invoice.service";
 import { securityDepositAmount } from "../utils/planPricing";
 import { buildFileUrl } from "../utils/fileUrl";
 
@@ -492,6 +493,8 @@ export async function listCustomerPaymentLinks(req: Request, res: Response): Pro
 
 // "Pay Customer" — a manual, immediate payout with no Razorpay involved.
 // Always Completed the moment it's recorded (there's nothing to wait on).
+// Also produces a downloadable REFUND-type invoice (see Receipts) carrying
+// the admin's typed reason, so every manual payout stays auditable.
 export async function createPayout(req: Request, res: Response): Promise<any> {
   try {
     const amount = Number(req.body.amount);
@@ -503,16 +506,32 @@ export async function createPayout(req: Request, res: Response): Promise<any> {
       return res.status(400).json({ success: false, message: "A reason is required" });
     }
 
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+    const proofUrl = files ? buildFileUrl(files, "proofFile") : null;
+    if (!proofUrl) {
+      return res.status(400).json({ success: false, message: "Payment proof is required" });
+    }
+
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
     if (!customer) {
       return res.status(404).json({ success: false, message: "Customer not found" });
     }
 
     const payout = await prisma.customerPayout.create({
-      data: { customerId: customer.id, amount, reason }
+      data: { customerId: customer.id, amount, reason, proofUrl }
     });
 
-    res.json({ success: true, payout });
+    const invoice = await createInvoice({
+      type: "REFUND",
+      customerId: customer.id,
+      productType: reason,
+      amount,
+      paymentMethod: "Manual",
+      status: "REFUNDED",
+      reason
+    });
+
+    res.json({ success: true, payout, invoice });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
