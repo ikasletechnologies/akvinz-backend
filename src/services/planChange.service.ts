@@ -43,7 +43,10 @@ export async function applyPlanChange(input: ApplyPlanChangeInput) {
     data: {
       planDuration: newPlanDuration,
       rentalPlanDuration: newPlanDuration,
-      rentalAmount: rentalAmountForPlan(newPlanDuration)
+      rentalAmount: rentalAmountForPlan(newPlanDuration),
+      // One-time proof for this specific downgrade — clear it so the next
+      // downgrade can't be confirmed off a stale upload.
+      planChangeRefundProofUrl: null
     }
   });
 

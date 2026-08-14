@@ -33,7 +33,8 @@ router.post(
     { name: "aadharBackFile", maxCount: 1 },
     { name: "panFrontFile", maxCount: 1 },
     { name: "panBackFile", maxCount: 1 },
-    { name: "residenceFile", maxCount: 1 }
+    { name: "residenceFile", maxCount: 1 },
+    { name: "planChangeRefundProofFile", maxCount: 1 }
   ]),
   uploadCustomerDocuments
 );

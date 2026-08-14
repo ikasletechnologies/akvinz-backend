@@ -6,6 +6,7 @@ import { razorpay } from "../config/razorpay";
 import { processRenewals } from "../services/billing.service";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
+import { securityDepositAmount } from "../utils/planPricing";
 import { buildFileUrl } from "../utils/fileUrl";
 
 export function login(req: Request, res: Response): any {
@@ -291,7 +292,8 @@ const DOCUMENT_UPLOAD_FIELDS: Record<string, string> = {
   aadharBackFile: "aadharBackImageUrl",
   panFrontFile: "panFrontImageUrl",
   panBackFile: "panBackImageUrl",
-  residenceFile: "residenceDocUrl"
+  residenceFile: "residenceDocUrl",
+  planChangeRefundProofFile: "planChangeRefundProofUrl"
 };
 const DOCUMENT_DB_FIELDS = new Set(Object.values(DOCUMENT_UPLOAD_FIELDS));
 
@@ -554,9 +556,34 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
       return res.status(400).json({ success: false, message: "Plan must be 12 or 24 months" });
     }
 
+    const customerId = req.params.id as string;
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    const difference = securityDepositAmount(newPlanDuration) - securityDepositAmount(customer.planDuration);
+    if (difference < 0 && !customer.planChangeRefundProofUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Upload proof that the deposit refund was sent to the customer before confirming this downgrade."
+      });
+    }
+    if (difference > 0) {
+      const paidTopUpLink = await prisma.paymentLinkRequest.findFirst({
+        where: { customerId, status: "PAID", planChangeTargetDuration: newPlanDuration }
+      });
+      if (!paidTopUpLink) {
+        return res.status(400).json({
+          success: false,
+          message: "Generate a top-up link and mark it as paid before confirming this upgrade."
+        });
+      }
+    }
+
     const requestedAmount = Number(req.body.amountHandled);
     const result = await applyPlanChange({
-      customerId: req.params.id as string,
+      customerId,
       newPlanDuration,
       amountHandled: Number.isFinite(requestedAmount) && requestedAmount >= 0 ? requestedAmount : undefined,
       paymentMethod: "Manual"
