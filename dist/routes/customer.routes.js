@@ -19,5 +19,6 @@ router.get("/customer/:customerId/invoices/:invoiceId/pdf", invoice_controller_1
 router.get("/customer/:mobileNumber", customer_controller_1.getCustomerByMobile);
 router.post("/subscription/return", customer_controller_1.requestReturn);
 router.post("/account/close", customer_controller_1.closeAccount);
+router.post("/account/bank-details", customer_controller_1.updateBankDetails);
 exports.default = router;
 //# sourceMappingURL=customer.routes.js.map

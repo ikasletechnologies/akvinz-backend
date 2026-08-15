@@ -33,7 +33,10 @@ async function applyPlanChange(input) {
         data: {
             planDuration: newPlanDuration,
             rentalPlanDuration: newPlanDuration,
-            rentalAmount: (0, planPricing_1.rentalAmountForPlan)(newPlanDuration)
+            rentalAmount: (0, planPricing_1.rentalAmountForPlan)(newPlanDuration),
+            // One-time proof for this specific downgrade — clear it so the next
+            // downgrade can't be confirmed off a stale upload.
+            planChangeRefundProofUrl: null
         }
     });
     const invoice = await (0, invoice_service_1.createInvoice)(difference > 0

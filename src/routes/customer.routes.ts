@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { upload } from "../middlewares/upload.middleware";
-import { register, getCustomerByMobile, requestReturn, closeAccount, saveDraft, getDraft, getDraftByMobile } from "../controllers/customer.controller";
+import { register, getCustomerByMobile, requestReturn, closeAccount, saveDraft, getDraft, getDraftByMobile, updateBankDetails } from "../controllers/customer.controller";
 import { downloadCustomerInvoicePdf } from "../controllers/invoice.controller";
 
 const router = Router();
@@ -22,5 +22,6 @@ router.get("/customer/:customerId/invoices/:invoiceId/pdf", downloadCustomerInvo
 router.get("/customer/:mobileNumber", getCustomerByMobile);
 router.post("/subscription/return", requestReturn);
 router.post("/account/close", closeAccount);
+router.post("/account/bank-details", updateBankDetails);
 
 export default router;

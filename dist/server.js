@@ -12,12 +12,12 @@ const PORT = process.env.PORT || 5000;
 app_1.default.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
-// Runs daily at 00:15 — advances subscriptionEnd for ACTIVE subscriptions
-// whose current billing period has ended, anchored to each customer's billingDay.
+// Runs daily at 00:15 — flips ACTIVE subscriptions whose current billing
+// period has ended to PENDING_DUE, anchored to each customer's billingDay.
 node_cron_1.default.schedule("15 0 * * *", async () => {
     try {
         const result = await (0, billing_service_1.processRenewals)();
-        console.log(`[billing] renewal sweep: checked=${result.checked} renewed=${result.renewed} completed=${result.completed}`);
+        console.log(`[billing] renewal sweep: checked=${result.checked} pendingDue=${result.pendingDue} completed=${result.completed}`);
     }
     catch (error) {
         console.error("[billing] renewal sweep failed", error);

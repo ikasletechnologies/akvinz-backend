@@ -189,7 +189,12 @@ export async function renderInvoicePdf(invoice: Invoice, customer: Customer): Pr
   doc.text("Terms & Conditions", margin, ty, { width: contentWidth });
   ty += doc.heightOfString("Terms & Conditions", { width: contentWidth }) + 10;
 
-  const footerHeight = 14 + company.address.length * 12 + 12;
+  // Must mirror the footer's actual layout below exactly (16 gap to the
+  // divider + 14 gap to the first line + 12 per line for legalName/address
+  // lines/GSTIN), otherwise this reserves too little room and the footer
+  // silently spills onto extra near-blank pages.
+  const footerLines = 1 /* legalName */ + company.address.length + 1 /* GSTIN */;
+  const footerHeight = 16 + 14 + footerLines * 12;
   const bottomLimit = doc.page.height - doc.page.margins.bottom;
 
   termsForInvoiceType(invoice.type).forEach(({ label, text }) => {

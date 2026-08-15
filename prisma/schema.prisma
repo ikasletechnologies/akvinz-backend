@@ -72,6 +72,14 @@ model Customer {
   refundBankIfscCode           String?
   refundBankAccountNumber      String?
 
+  // General-purpose bank account details the customer can submit any time
+  // (via bankDetailsForm), independent of a return/refund — e.g. so the
+  // admin has somewhere to send an ad-hoc manual payout.
+  bankAccountHolderName String?
+  bankName              String?
+  bankIfscCode          String?
+  bankAccountNumber     String?
+
   invoices          Invoice[]
   returnProcessEvents ReturnProcessEvent[]
   paymentLinks      PaymentLinkRequest[]

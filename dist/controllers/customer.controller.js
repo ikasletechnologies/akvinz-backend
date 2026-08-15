@@ -6,17 +6,20 @@ exports.getDraft = getDraft;
 exports.getDraftByMobile = getDraftByMobile;
 exports.getCustomerByMobile = getCustomerByMobile;
 exports.requestReturn = requestReturn;
+exports.updateBankDetails = updateBankDetails;
 exports.closeAccount = closeAccount;
 const prisma_1 = require("../config/prisma");
 const fileUrl_1 = require("../utils/fileUrl");
 const invoice_service_1 = require("../services/invoice.service");
+const autopay_service_1 = require("../services/autopay.service");
 // Shared by saveDraft (autosave while typing) and register (the final
 // "submit registration" step, which now also just writes a draft — a
 // Customer row is only ever created once payment succeeds, in verifyPayment).
-// Keeps the "one draft per mobile number" and "mobile numbers are only
-// checked against real Customers" rules in one place.
+// Keeps the "one draft per mobile number" and "mobile numbers/emails are
+// only checked against real Customers" rules in one place.
 async function upsertDraft(draftId, data) {
     const mobileNumber = data.mobileNumber ?? undefined;
+    const email = data.email ?? undefined;
     if (mobileNumber) {
         const existingCustomer = await prisma_1.prisma.customer.findUnique({ where: { mobileNumber } });
         if (existingCustomer) {
@@ -33,6 +36,16 @@ async function upsertDraft(draftId, data) {
                 prisma_1.prisma.customerDraft.update({ where: { id: existingDraft.id }, data })
             ]);
             return { status: "ok", draft: resumedDraft, resumedDraftId: resumedDraft.id };
+        }
+    }
+    // Same idea as the mobile check above — an email already tied to a real
+    // Customer must not be allowed onto a new draft, otherwise the conflict
+    // only surfaces after the customer has already paid the deposit (see
+    // finalizeRegistration, which re-checks this at payment time too).
+    if (email) {
+        const existingCustomerByEmail = await prisma_1.prisma.customer.findUnique({ where: { email } });
+        if (existingCustomerByEmail) {
+            return { status: "email_exists" };
         }
     }
     const draft = await prisma_1.prisma.customerDraft.upsert({
@@ -79,6 +92,9 @@ async function register(req, res) {
         if (result.status === "customer_exists") {
             return res.status(400).json({ success: false, message: "A customer with this mobile number is already registered." });
         }
+        if (result.status === "email_exists") {
+            return res.status(400).json({ success: false, message: "A customer with this email is already registered." });
+        }
         res.json({ success: true, draftId: result.draft.id });
     }
     catch (error) {
@@ -114,6 +130,13 @@ async function saveDraft(req, res) {
                 success: false,
                 code: "CUSTOMER_EXISTS",
                 message: "This mobile number is already registered."
+            });
+        }
+        if (result.status === "email_exists") {
+            return res.status(409).json({
+                success: false,
+                code: "EMAIL_EXISTS",
+                message: "This email is already registered."
             });
         }
         res.json({ success: true, draft: result.draft, resumedDraftId: result.resumedDraftId });
@@ -175,15 +198,21 @@ async function getCustomerByMobile(req, res) {
 }
 async function requestReturn(req, res) {
     try {
-        const { customerId } = req.body;
+        const { customerId, bankAccountHolderName, bankName, bankIfscCode, bankAccountNumber, bankAccountNumberConfirm } = req.body;
         if (!customerId) {
             return res.status(400).json({ success: false, message: "customerId is required" });
+        }
+        if (!bankAccountHolderName || !bankName || !bankIfscCode || !bankAccountNumber) {
+            return res.status(400).json({ success: false, message: "Bank account details are required to process the refund" });
+        }
+        if (bankAccountNumber !== bankAccountNumberConfirm) {
+            return res.status(400).json({ success: false, message: "Account number and confirmation do not match" });
         }
         const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
         if (!customer) {
             return res.status(404).json({ success: false, message: "Customer not found" });
         }
-        if (customer.subscriptionStatus !== "ACTIVE") {
+        if (customer.subscriptionStatus !== "ACTIVE" && customer.subscriptionStatus !== "PENDING_DUE") {
             return res.status(400).json({ success: false, message: "No active subscription to discontinue" });
         }
         const updated = await prisma_1.prisma.customer.update({
@@ -192,10 +221,47 @@ async function requestReturn(req, res) {
                 subscriptionStatus: "CANCELLED",
                 returnRequested: true,
                 returnRequestedAt: new Date(),
+                refundBankAccountHolderName: bankAccountHolderName,
+                refundBankName: bankName,
+                refundBankIfscCode: bankIfscCode,
+                refundBankAccountNumber: bankAccountNumber,
                 // A completed advance payment becomes refundable once the product is being returned;
                 // the admin fixes the final refundAmount after the technician reports its condition.
                 ...(customer.paymentStatus === "COMPLETED" ? { paymentStatus: "PENDING_REFUND" } : {})
             }
+        });
+        // Stop autopay from continuing to charge rent once the return is requested.
+        await (0, autopay_service_1.cancelAutopay)(customerId);
+        res.json({ success: true, customer: updated });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+// Lets an already-registered customer submit/update a general bank account
+// (bankDetailsForm) at any time — independent of a return/refund — so the
+// admin has somewhere on file to send an ad-hoc manual payout. Separate
+// from refundBank* above, which is collected specifically at return-request
+// time and may legitimately differ (e.g. a different account for a refund).
+async function updateBankDetails(req, res) {
+    try {
+        const { customerId, bankAccountHolderName, bankName, bankIfscCode, bankAccountNumber, bankAccountNumberConfirm } = req.body;
+        if (!customerId) {
+            return res.status(400).json({ success: false, message: "customerId is required" });
+        }
+        if (!bankAccountHolderName || !bankName || !bankIfscCode || !bankAccountNumber) {
+            return res.status(400).json({ success: false, message: "All bank account details are required" });
+        }
+        if (bankAccountNumber !== bankAccountNumberConfirm) {
+            return res.status(400).json({ success: false, message: "Account number and confirmation do not match" });
+        }
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
+        if (!customer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        const updated = await prisma_1.prisma.customer.update({
+            where: { id: customerId },
+            data: { bankAccountHolderName, bankName, bankIfscCode, bankAccountNumber }
         });
         res.json({ success: true, customer: updated });
     }

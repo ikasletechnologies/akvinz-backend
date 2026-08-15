@@ -12,7 +12,7 @@ const env_1 = require("./config/env");
 const routes_1 = __importDefault(require("./routes"));
 const webhook_controller_1 = require("./controllers/webhook.controller");
 const app = (0, express_1.default)();
-app.use((0, cors_1.default)());
+app.use((0, cors_1.default)({ origin: env_1.env.corsOrigin }));
 app.use((0, helmet_1.default)());
 app.use((0, compression_1.default)());
 app.use((0, morgan_1.default)("dev"));

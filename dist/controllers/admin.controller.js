@@ -8,6 +8,9 @@ exports.getStats = getStats;
 exports.listCustomers = listCustomers;
 exports.listDrafts = listDrafts;
 exports.deleteDraft = deleteDraft;
+exports.createCustomer = createCustomer;
+exports.uploadCustomerDocuments = uploadCustomerDocuments;
+exports.deleteCustomerDocument = deleteCustomerDocument;
 exports.getCustomer = getCustomer;
 exports.updateCustomer = updateCustomer;
 exports.deleteCustomer = deleteCustomer;
@@ -25,6 +28,9 @@ const razorpay_1 = require("../config/razorpay");
 const billing_service_1 = require("../services/billing.service");
 const paymentLink_service_1 = require("../services/paymentLink.service");
 const planChange_service_1 = require("../services/planChange.service");
+const invoice_service_1 = require("../services/invoice.service");
+const planPricing_1 = require("../utils/planPricing");
+const fileUrl_1 = require("../utils/fileUrl");
 function login(req, res) {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -36,27 +42,105 @@ function login(req, res) {
     const token = jsonwebtoken_1.default.sign({ email, role: "admin" }, env_1.env.admin.jwtSecret, { expiresIn: "12h" });
     res.json({ success: true, token });
 }
+// Builds a Prisma date-range filter for a `from`/`to` query pair (both
+// optional, either can be omitted). Returns undefined entirely when neither
+// is set, so callers can spread it into a `where` clause without adding an
+// empty {gte: undefined, lte: undefined} object. `to` is treated as
+// inclusive of the whole day.
+function dateRangeFilter(from, to) {
+    if (!from && !to)
+        return undefined;
+    const filter = {};
+    if (from)
+        filter.gte = new Date(from);
+    if (to) {
+        const end = new Date(to);
+        end.setHours(23, 59, 59, 999);
+        filter.lte = end;
+    }
+    return filter;
+}
+// "Assets Received" has no single-query answer: it's the count of customers
+// whose MOST RECENT MACHINE_RECEIVED_WAREHOUSE return-process event is
+// COMPLETED. Fetches that step's events (small volume — one rental
+// company's returns) and reduces to the latest per customer in JS, since
+// Prisma has no "latest row per group" aggregate.
+async function countAssetsReceived(range) {
+    const events = await prisma_1.prisma.returnProcessEvent.findMany({
+        where: { step: "MACHINE_RECEIVED_WAREHOUSE" },
+        orderBy: { createdAt: "desc" },
+        select: { customerId: true, status: true, eventDate: true }
+    });
+    const latestByCustomer = new Map();
+    for (const event of events) {
+        if (!latestByCustomer.has(event.customerId)) {
+            latestByCustomer.set(event.customerId, { status: event.status, eventDate: event.eventDate });
+        }
+    }
+    let count = 0;
+    for (const { status, eventDate } of latestByCustomer.values()) {
+        if (status !== "COMPLETED")
+            continue;
+        if (range?.gte && eventDate < range.gte)
+            continue;
+        if (range?.lte && eventDate > range.lte)
+            continue;
+        count += 1;
+    }
+    return count;
+}
 async function getStats(req, res) {
     try {
-        const [totalCustomers, activeSubscriptions, pendingPayments, completedPayments, totalReturns, pendingRefunds, revenueAgg] = await Promise.all([
-            prisma_1.prisma.customer.count(),
-            prisma_1.prisma.customer.count({ where: { subscriptionStatus: "ACTIVE" } }),
-            prisma_1.prisma.customer.count({ where: { paymentStatus: "PENDING" } }),
-            prisma_1.prisma.customer.count({ where: { paymentStatus: "COMPLETED" } }),
-            prisma_1.prisma.customer.count({ where: { returnRequested: true } }),
-            prisma_1.prisma.customer.count({ where: { paymentStatus: "PENDING_REFUND" } }),
-            prisma_1.prisma.customer.aggregate({ _sum: { rentalAmount: true } })
+        const { from, to } = req.query;
+        const range = dateRangeFilter(from, to);
+        // A Subscriber = paid the security deposit (every Customer row implies
+        // this — see finalizeRegistration/createCustomer, a row only exists
+        // once payment succeeds) and hasn't finally been refunded/closed yet.
+        // paymentStatus is COMPLETED -> PENDING_REFUND (return requested) ->
+        // REFUNDED (closeAccount, the final step) — so "not REFUNDED" is the
+        // whole condition. Deliberately NOT keyed off subscriptionStatus or
+        // Invoice rows: subscriptionStatus flips to CANCELLED the moment a
+        // return is *requested*, well before any refund happens, so it can't
+        // tell an in-progress return apart from a completed one; and a
+        // manually/offline-created customer (admin.controller.createCustomer)
+        // never gets a SECURITY_DEPOSIT invoice at all, so relying on Invoice
+        // rows silently excluded them.
+        const subscriberWhere = { paymentStatus: { not: "REFUNDED" } };
+        const [totalCustomers, totalSubscribers, twelveMonthCustomers, twentyFourMonthCustomers, rentalPaidInvoices, rentalDue, returnsInitiated, refundedInvoices, rentalRevenueAgg, totalDepositsAgg, assetsReceived] = await Promise.all([
+            prisma_1.prisma.customer.count({ where: { createdAt: range } }),
+            prisma_1.prisma.customer.count({ where: { ...subscriberWhere, createdAt: range } }),
+            prisma_1.prisma.customer.count({ where: { ...subscriberWhere, planDuration: 12, createdAt: range } }),
+            prisma_1.prisma.customer.count({ where: { ...subscriberWhere, planDuration: 24, createdAt: range } }),
+            prisma_1.prisma.invoice.findMany({
+                where: { type: "RENTAL", status: "FUNDED", createdAt: range },
+                select: { customerId: true },
+                distinct: ["customerId"]
+            }),
+            prisma_1.prisma.customer.count({ where: { subscriptionStatus: "PENDING_DUE", subscriptionEnd: range } }),
+            prisma_1.prisma.customer.count({ where: { returnRequested: true, returnRequestedAt: range } }),
+            prisma_1.prisma.invoice.findMany({
+                where: { type: "REFUND", productType: "Security Deposit Refund", status: "REFUNDED", createdAt: range },
+                select: { customerId: true },
+                distinct: ["customerId"]
+            }),
+            prisma_1.prisma.invoice.aggregate({ where: { type: "RENTAL", status: "FUNDED", createdAt: range }, _sum: { amount: true } }),
+            prisma_1.prisma.invoice.aggregate({ where: { type: "SECURITY_DEPOSIT", status: "FUNDED", createdAt: range }, _sum: { amount: true } }),
+            countAssetsReceived(range)
         ]);
         res.json({
             success: true,
             stats: {
                 totalCustomers,
-                activeSubscriptions,
-                pendingPayments,
-                completedPayments,
-                totalReturns,
-                pendingRefunds,
-                totalRentalRevenue: revenueAgg._sum.rentalAmount || 0
+                totalSubscribers,
+                twelveMonthCustomers,
+                twentyFourMonthCustomers,
+                rentalPaid: rentalPaidInvoices.length,
+                rentalDue,
+                returnsInitiated,
+                customersRefunded: refundedInvoices.length,
+                rentalRevenue: rentalRevenueAgg._sum.amount || 0,
+                totalDeposits: totalDepositsAgg._sum.amount || 0,
+                assetsReceived
             }
         });
     }
@@ -156,6 +240,108 @@ async function deleteDraft(req, res) {
         res.status(500).json({ success: false, message: error.message });
     }
 }
+// Lets an admin add a customer directly — no OTP, no draft, no payment
+// flow. Used for entries that happened outside the normal online journey
+// (e.g. an offline/cash signup). paymentStatus is set to COMPLETED since
+// there's no real online payment to leave PENDING against; PENDING isn't a
+// selectable option in the admin edit form's Payment Status dropdown, so
+// leaving it there would strand the customer with no way to change it via
+// the UI.
+async function createCustomer(req, res) {
+    try {
+        const { fullName, mobileNumber, email, addressLine1, addressLine2, city, state, pincode, planDuration, houseType } = req.body;
+        if (!fullName || !mobileNumber || !email || !addressLine1 || !city || !state || !pincode || !planDuration || !houseType) {
+            return res.status(400).json({ success: false, message: "Please fill in all required fields." });
+        }
+        const files = req.files;
+        const customer = await prisma_1.prisma.customer.create({
+            data: {
+                fullName,
+                mobileNumber,
+                email,
+                addressLine1,
+                addressLine2: addressLine2 || null,
+                city,
+                state,
+                pincode,
+                planDuration: parseInt(planDuration),
+                houseType,
+                paymentStatus: "COMPLETED",
+                aadharFrontImageUrl: files ? (0, fileUrl_1.buildFileUrl)(files, "aadharFrontFile") : null,
+                aadharBackImageUrl: files ? (0, fileUrl_1.buildFileUrl)(files, "aadharBackFile") : null,
+                panFrontImageUrl: files ? (0, fileUrl_1.buildFileUrl)(files, "panFrontFile") : null,
+                panBackImageUrl: files ? (0, fileUrl_1.buildFileUrl)(files, "panBackFile") : null,
+                residenceDocUrl: files ? (0, fileUrl_1.buildFileUrl)(files, "residenceFile") : null
+            }
+        });
+        res.json({ success: true, customer });
+    }
+    catch (error) {
+        if (error.code === "P2002") {
+            return res.status(400).json({ success: false, message: "A customer with this mobile number or email already exists." });
+        }
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+// Upload field name -> Customer column, shared by both document endpoints
+// below and matching the same upload field names /register already uses.
+const DOCUMENT_UPLOAD_FIELDS = {
+    aadharFrontFile: "aadharFrontImageUrl",
+    aadharBackFile: "aadharBackImageUrl",
+    panFrontFile: "panFrontImageUrl",
+    panBackFile: "panBackImageUrl",
+    residenceFile: "residenceDocUrl",
+    planChangeRefundProofFile: "planChangeRefundProofUrl"
+};
+const DOCUMENT_DB_FIELDS = new Set(Object.values(DOCUMENT_UPLOAD_FIELDS));
+// Lets an admin upload or replace a customer's KYC documents after the
+// fact (e.g. a blurry scan, or one collected later than the others).
+// Accepts any subset of the 5 file fields — only the ones present are
+// updated, the rest are left as-is.
+async function uploadCustomerDocuments(req, res) {
+    try {
+        const files = req.files;
+        if (!files || Object.keys(files).length === 0) {
+            return res.status(400).json({ success: false, message: "No file uploaded" });
+        }
+        const data = {};
+        for (const [uploadField, dbField] of Object.entries(DOCUMENT_UPLOAD_FIELDS)) {
+            const url = (0, fileUrl_1.buildFileUrl)(files, uploadField);
+            if (url)
+                data[dbField] = url;
+        }
+        const customer = await prisma_1.prisma.customer.update({
+            where: { id: req.params.id },
+            data
+        });
+        res.json({ success: true, customer });
+    }
+    catch (error) {
+        if (error.code === "P2025") {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+async function deleteCustomerDocument(req, res) {
+    try {
+        const field = req.params.field;
+        if (!DOCUMENT_DB_FIELDS.has(field)) {
+            return res.status(400).json({ success: false, message: "Invalid document field" });
+        }
+        const customer = await prisma_1.prisma.customer.update({
+            where: { id: req.params.id },
+            data: { [field]: null }
+        });
+        res.json({ success: true, customer });
+    }
+    catch (error) {
+        if (error.code === "P2025") {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
 async function getCustomer(req, res) {
     try {
         const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
@@ -175,7 +361,8 @@ async function updateCustomer(req, res) {
             "city", "state", "pincode", "planDuration", "houseType",
             "paymentStatus", "rentalPlanDuration", "rentalAmount",
             "subscriptionStatus", "subscriptionStart", "subscriptionEnd", "billingDay",
-            "returnRequested", "refundAmount", "modelName", "machineSerialNumber"
+            "returnRequested", "refundAmount", "modelName", "machineSerialNumber",
+            "bankAccountHolderName", "bankName", "bankIfscCode", "bankAccountNumber"
         ];
         const data = {};
         for (const field of allowedFields) {
@@ -215,8 +402,19 @@ async function updateCustomer(req, res) {
     }
 }
 async function deleteCustomer(req, res) {
+    const customerId = req.params.id;
     try {
-        await prisma_1.prisma.customer.delete({ where: { id: req.params.id } });
+        // Deleting a customer also permanently erases their invoices, payment
+        // links, payouts, and return-process history — there's no FK cascade in
+        // the schema (invoices are normally kept as permanent billing records),
+        // so it's done explicitly here in one transaction.
+        await prisma_1.prisma.$transaction([
+            prisma_1.prisma.invoice.deleteMany({ where: { customerId } }),
+            prisma_1.prisma.returnProcessEvent.deleteMany({ where: { customerId } }),
+            prisma_1.prisma.paymentLinkRequest.deleteMany({ where: { customerId } }),
+            prisma_1.prisma.customerPayout.deleteMany({ where: { customerId } }),
+            prisma_1.prisma.customer.delete({ where: { id: customerId } }),
+        ]);
         res.json({ success: true, message: "Customer deleted" });
     }
     catch (error) {
@@ -287,6 +485,8 @@ async function listCustomerPaymentLinks(req, res) {
 }
 // "Pay Customer" — a manual, immediate payout with no Razorpay involved.
 // Always Completed the moment it's recorded (there's nothing to wait on).
+// Also produces a downloadable REFUND-type invoice (see Receipts) carrying
+// the admin's typed reason, so every manual payout stays auditable.
 async function createPayout(req, res) {
     try {
         const amount = Number(req.body.amount);
@@ -297,14 +497,28 @@ async function createPayout(req, res) {
         if (!reason) {
             return res.status(400).json({ success: false, message: "A reason is required" });
         }
+        const files = req.files;
+        const proofUrl = files ? (0, fileUrl_1.buildFileUrl)(files, "proofFile") : null;
+        if (!proofUrl) {
+            return res.status(400).json({ success: false, message: "Payment proof is required" });
+        }
         const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
         if (!customer) {
             return res.status(404).json({ success: false, message: "Customer not found" });
         }
         const payout = await prisma_1.prisma.customerPayout.create({
-            data: { customerId: customer.id, amount, reason }
+            data: { customerId: customer.id, amount, reason, proofUrl }
         });
-        res.json({ success: true, payout });
+        const invoice = await (0, invoice_service_1.createInvoice)({
+            type: "REFUND",
+            customerId: customer.id,
+            productType: reason,
+            amount,
+            paymentMethod: "Manual",
+            status: "REFUNDED",
+            reason
+        });
+        res.json({ success: true, payout, invoice });
     }
     catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -347,9 +561,32 @@ async function changePlan(req, res) {
         if (newPlanDuration !== 12 && newPlanDuration !== 24) {
             return res.status(400).json({ success: false, message: "Plan must be 12 or 24 months" });
         }
+        const customerId = req.params.id;
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
+        if (!customer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        const difference = (0, planPricing_1.securityDepositAmount)(newPlanDuration) - (0, planPricing_1.securityDepositAmount)(customer.planDuration);
+        if (difference < 0 && !customer.planChangeRefundProofUrl) {
+            return res.status(400).json({
+                success: false,
+                message: "Upload proof that the deposit refund was sent to the customer before confirming this downgrade."
+            });
+        }
+        if (difference > 0) {
+            const paidTopUpLink = await prisma_1.prisma.paymentLinkRequest.findFirst({
+                where: { customerId, status: "PAID", planChangeTargetDuration: newPlanDuration }
+            });
+            if (!paidTopUpLink) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Generate a top-up link and mark it as paid before confirming this upgrade."
+                });
+            }
+        }
         const requestedAmount = Number(req.body.amountHandled);
         const result = await (0, planChange_service_1.applyPlanChange)({
-            customerId: req.params.id,
+            customerId,
             newPlanDuration,
             amountHandled: Number.isFinite(requestedAmount) && requestedAmount >= 0 ? requestedAmount : undefined,
             paymentMethod: "Manual"

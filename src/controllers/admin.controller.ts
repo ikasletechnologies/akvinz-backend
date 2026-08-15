@@ -76,6 +76,20 @@ export async function getStats(req: Request, res: Response): Promise<any> {
     const { from, to } = req.query as { from?: string; to?: string };
     const range = dateRangeFilter(from, to);
 
+    // A Subscriber = paid the security deposit (every Customer row implies
+    // this — see finalizeRegistration/createCustomer, a row only exists
+    // once payment succeeds) and hasn't finally been refunded/closed yet.
+    // paymentStatus is COMPLETED -> PENDING_REFUND (return requested) ->
+    // REFUNDED (closeAccount, the final step) — so "not REFUNDED" is the
+    // whole condition. Deliberately NOT keyed off subscriptionStatus or
+    // Invoice rows: subscriptionStatus flips to CANCELLED the moment a
+    // return is *requested*, well before any refund happens, so it can't
+    // tell an in-progress return apart from a completed one; and a
+    // manually/offline-created customer (admin.controller.createCustomer)
+    // never gets a SECURITY_DEPOSIT invoice at all, so relying on Invoice
+    // rows silently excluded them.
+    const subscriberWhere = { paymentStatus: { not: "REFUNDED" } };
+
     const [
       totalCustomers,
       totalSubscribers,
@@ -90,13 +104,9 @@ export async function getStats(req: Request, res: Response): Promise<any> {
       assetsReceived
     ] = await Promise.all([
       prisma.customer.count({ where: { createdAt: range } }),
-      prisma.invoice.findMany({
-        where: { type: "SECURITY_DEPOSIT", status: "FUNDED", createdAt: range },
-        select: { customerId: true },
-        distinct: ["customerId"]
-      }),
-      prisma.customer.count({ where: { planDuration: 12, subscriptionStatus: { in: ["ACTIVE", "PENDING_DUE"] }, createdAt: range } }),
-      prisma.customer.count({ where: { planDuration: 24, subscriptionStatus: { in: ["ACTIVE", "PENDING_DUE"] }, createdAt: range } }),
+      prisma.customer.count({ where: { ...subscriberWhere, createdAt: range } }),
+      prisma.customer.count({ where: { ...subscriberWhere, planDuration: 12, createdAt: range } }),
+      prisma.customer.count({ where: { ...subscriberWhere, planDuration: 24, createdAt: range } }),
       prisma.invoice.findMany({
         where: { type: "RENTAL", status: "FUNDED", createdAt: range },
         select: { customerId: true },
@@ -118,7 +128,7 @@ export async function getStats(req: Request, res: Response): Promise<any> {
       success: true,
       stats: {
         totalCustomers,
-        totalSubscribers: totalSubscribers.length,
+        totalSubscribers,
         twelveMonthCustomers,
         twentyFourMonthCustomers,
         rentalPaid: rentalPaidInvoices.length,
@@ -369,7 +379,8 @@ export async function updateCustomer(req: Request, res: Response): Promise<any> 
       "city", "state", "pincode", "planDuration", "houseType",
       "paymentStatus", "rentalPlanDuration", "rentalAmount",
       "subscriptionStatus", "subscriptionStart", "subscriptionEnd", "billingDay",
-      "returnRequested", "refundAmount", "modelName", "machineSerialNumber"
+      "returnRequested", "refundAmount", "modelName", "machineSerialNumber",
+      "bankAccountHolderName", "bankName", "bankIfscCode", "bankAccountNumber"
     ];
 
     const data: any = {};

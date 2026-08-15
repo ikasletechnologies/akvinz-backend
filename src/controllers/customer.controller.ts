@@ -294,6 +294,50 @@ export async function requestReturn(req: Request, res: Response): Promise<any> {
   }
 }
 
+// Lets an already-registered customer submit/update a general bank account
+// (bankDetailsForm) at any time — independent of a return/refund — so the
+// admin has somewhere on file to send an ad-hoc manual payout. Separate
+// from refundBank* above, which is collected specifically at return-request
+// time and may legitimately differ (e.g. a different account for a refund).
+export async function updateBankDetails(req: Request, res: Response): Promise<any> {
+  try {
+    const {
+      customerId,
+      bankAccountHolderName,
+      bankName,
+      bankIfscCode,
+      bankAccountNumber,
+      bankAccountNumberConfirm
+    } = req.body;
+
+    if (!customerId) {
+      return res.status(400).json({ success: false, message: "customerId is required" });
+    }
+
+    if (!bankAccountHolderName || !bankName || !bankIfscCode || !bankAccountNumber) {
+      return res.status(400).json({ success: false, message: "All bank account details are required" });
+    }
+
+    if (bankAccountNumber !== bankAccountNumberConfirm) {
+      return res.status(400).json({ success: false, message: "Account number and confirmation do not match" });
+    }
+
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    const updated = await prisma.customer.update({
+      where: { id: customerId },
+      data: { bankAccountHolderName, bankName, bankIfscCode, bankAccountNumber }
+    });
+
+    res.json({ success: true, customer: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
 // Final step of the close-agreement flow: only usable once the admin has inspected the
 // returned product and fixed a refundAmount. The customer just confirms that fixed number.
 export async function closeAccount(req: Request, res: Response): Promise<any> {
