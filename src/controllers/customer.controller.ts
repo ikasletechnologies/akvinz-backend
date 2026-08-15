@@ -7,15 +7,17 @@ import { cancelAutopay } from "../services/autopay.service";
 
 type DraftUpsertResult =
   | { status: "customer_exists" }
+  | { status: "email_exists" }
   | { status: "ok"; draft: CustomerDraft; resumedDraftId?: string };
 
 // Shared by saveDraft (autosave while typing) and register (the final
 // "submit registration" step, which now also just writes a draft — a
 // Customer row is only ever created once payment succeeds, in verifyPayment).
-// Keeps the "one draft per mobile number" and "mobile numbers are only
-// checked against real Customers" rules in one place.
+// Keeps the "one draft per mobile number" and "mobile numbers/emails are
+// only checked against real Customers" rules in one place.
 async function upsertDraft(draftId: string, data: Omit<Prisma.CustomerDraftCreateInput, "id">): Promise<DraftUpsertResult> {
   const mobileNumber = data.mobileNumber ?? undefined;
+  const email = data.email ?? undefined;
 
   if (mobileNumber) {
     const existingCustomer = await prisma.customer.findUnique({ where: { mobileNumber } });
@@ -34,6 +36,17 @@ async function upsertDraft(draftId: string, data: Omit<Prisma.CustomerDraftCreat
         prisma.customerDraft.update({ where: { id: existingDraft.id }, data })
       ]);
       return { status: "ok", draft: resumedDraft, resumedDraftId: resumedDraft.id };
+    }
+  }
+
+  // Same idea as the mobile check above — an email already tied to a real
+  // Customer must not be allowed onto a new draft, otherwise the conflict
+  // only surfaces after the customer has already paid the deposit (see
+  // finalizeRegistration, which re-checks this at payment time too).
+  if (email) {
+    const existingCustomerByEmail = await prisma.customer.findUnique({ where: { email } });
+    if (existingCustomerByEmail) {
+      return { status: "email_exists" };
     }
   }
 
@@ -99,6 +112,9 @@ export async function register(req: Request, res: Response): Promise<any> {
     if (result.status === "customer_exists") {
       return res.status(400).json({ success: false, message: "A customer with this mobile number is already registered." });
     }
+    if (result.status === "email_exists") {
+      return res.status(400).json({ success: false, message: "A customer with this email is already registered." });
+    }
 
     res.json({ success: true, draftId: result.draft.id });
   } catch (error: any) {
@@ -151,6 +167,13 @@ export async function saveDraft(req: Request, res: Response): Promise<any> {
         success: false,
         code: "CUSTOMER_EXISTS",
         message: "This mobile number is already registered."
+      });
+    }
+    if (result.status === "email_exists") {
+      return res.status(409).json({
+        success: false,
+        code: "EMAIL_EXISTS",
+        message: "This email is already registered."
       });
     }
 

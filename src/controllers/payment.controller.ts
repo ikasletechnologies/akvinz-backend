@@ -64,6 +64,9 @@ export async function verifyPayment(req: Request, res: Response): Promise<any> {
     if (result.status === "mobile_conflict") {
       return res.status(400).json({ success: false, message: "A customer with this mobile number is already registered." });
     }
+    if (result.status === "email_conflict") {
+      return res.status(400).json({ success: false, message: "A customer with this email is already registered." });
+    }
 
     return res.json({
       success: true,

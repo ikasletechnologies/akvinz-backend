@@ -6,6 +6,7 @@ type FinalizeRegistrationResult =
   | { status: "draft_not_found" }
   | { status: "incomplete" }
   | { status: "mobile_conflict" }
+  | { status: "email_conflict" }
   | { status: "created"; customer: Awaited<ReturnType<typeof prisma.customer.create>>; invoiceId: string };
 
 // This is where a Draft actually becomes a Customer. Two independent paths
@@ -40,6 +41,17 @@ export async function finalizeRegistration(
   const existingByMobile = await prisma.customer.findUnique({ where: { mobileNumber: draft.mobileNumber } });
   if (existingByMobile) {
     return { status: "mobile_conflict" };
+  }
+
+  // Belt-and-braces re-check: the draft-save step already rejects an email
+  // that belongs to an existing Customer, but a draft created before that
+  // check existed (or one that's simply been sitting around since) could
+  // still reach here with a stale conflicting email — better to catch it
+  // before payment than to let customer.create() throw after the money's
+  // already moved.
+  const existingByEmail = await prisma.customer.findUnique({ where: { email: draft.email } });
+  if (existingByEmail) {
+    return { status: "email_conflict" };
   }
 
   const customer = await prisma.customer.create({
