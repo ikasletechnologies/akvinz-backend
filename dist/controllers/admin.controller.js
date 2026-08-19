@@ -18,8 +18,10 @@ exports.createPaymentLink = createPaymentLink;
 exports.listCustomerPaymentLinks = listCustomerPaymentLinks;
 exports.createPayout = createPayout;
 exports.listCustomerPayouts = listCustomerPayouts;
+exports.refundNow = refundNow;
 exports.markPaymentLinkAsPaid = markPaymentLinkAsPaid;
 exports.changePlan = changePlan;
+exports.refundPlanChangeViaRazorpay = refundPlanChangeViaRazorpay;
 exports.triggerRenewals = triggerRenewals;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prisma_1 = require("../config/prisma");
@@ -29,6 +31,7 @@ const billing_service_1 = require("../services/billing.service");
 const paymentLink_service_1 = require("../services/paymentLink.service");
 const planChange_service_1 = require("../services/planChange.service");
 const invoice_service_1 = require("../services/invoice.service");
+const refund_service_1 = require("../services/refund.service");
 const planPricing_1 = require("../utils/planPricing");
 const fileUrl_1 = require("../utils/fileUrl");
 function login(req, res) {
@@ -304,14 +307,26 @@ async function uploadCustomerDocuments(req, res) {
         if (!files || Object.keys(files).length === 0) {
             return res.status(400).json({ success: false, message: "No file uploaded" });
         }
+        const customerId = req.params.id;
+        const existingCustomer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
+        if (!existingCustomer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
         const data = {};
         for (const [uploadField, dbField] of Object.entries(DOCUMENT_UPLOAD_FIELDS)) {
             const url = (0, fileUrl_1.buildFileUrl)(files, uploadField);
             if (url)
                 data[dbField] = url;
         }
+        // Exclusivity check: reject manual proof if Razorpay refund has been initiated
+        if (data.planChangeRefundProofUrl && existingCustomer.planChangeRazorpayRefundId) {
+            return res.status(400).json({
+                success: false,
+                message: "Cannot upload manual proof because a Razorpay refund has already been initiated/processed."
+            });
+        }
         const customer = await prisma_1.prisma.customer.update({
-            where: { id: req.params.id },
+            where: { id: customerId },
             data
         });
         res.json({ success: true, customer });
@@ -536,6 +551,32 @@ async function listCustomerPayouts(req, res) {
         res.status(500).json({ success: false, message: error.message });
     }
 }
+// Admin-triggered equivalent of the customer confirming on /closeForm —
+// refunds the security deposit via Razorpay immediately instead of waiting
+// on the customer to accept the fixed amount themselves.
+async function refundNow(req, res) {
+    try {
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
+        if (!customer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        if (customer.paymentStatus !== "PENDING_REFUND") {
+            return res.status(400).json({ success: false, message: "No pending refund found for this account" });
+        }
+        if (customer.refundAmount === null) {
+            return res.status(400).json({ success: false, message: "Refund amount has not been finalized yet" });
+        }
+        const { invoice } = await (0, refund_service_1.refundSecurityDeposit)(customer.id, customer.refundAmount, "Refund of security deposit following product return (admin-initiated)");
+        const updated = await prisma_1.prisma.customer.update({
+            where: { id: customer.id },
+            data: { paymentStatus: "REFUNDED" }
+        });
+        res.json({ success: true, customer: updated, invoiceId: invoice.id });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.error?.description || error.message });
+    }
+}
 // Fallback for when the Razorpay webhook hasn't fired (e.g. local dev, where
 // Razorpay can't reach localhost) or is delayed — admin confirms payment
 // after checking the Razorpay dashboard themselves.
@@ -567,11 +608,32 @@ async function changePlan(req, res) {
             return res.status(404).json({ success: false, message: "Customer not found" });
         }
         const difference = (0, planPricing_1.securityDepositAmount)(newPlanDuration) - (0, planPricing_1.securityDepositAmount)(customer.planDuration);
-        if (difference < 0 && !customer.planChangeRefundProofUrl) {
-            return res.status(400).json({
-                success: false,
-                message: "Upload proof that the deposit refund was sent to the customer before confirming this downgrade."
-            });
+        if (difference < 0) {
+            if (!customer.planChangeRefundProofUrl && !customer.planChangeRazorpayRefundId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Refund the deposit via Razorpay, or upload proof it was sent, before confirming this downgrade."
+                });
+            }
+            // Verify Razorpay refund state if it exists
+            if (customer.planChangeRazorpayRefundId) {
+                try {
+                    const refundObj = await razorpay_1.razorpay.refunds.fetch(customer.planChangeRazorpayRefundId);
+                    if (refundObj.status === "failed") {
+                        return res.status(400).json({
+                            success: false,
+                            message: "The Razorpay refund failed. Please retry the refund or settle manually."
+                        });
+                    }
+                }
+                catch (err) {
+                    // If we fail to fetch (e.g. network issue), reject to prevent applying unpaid plan
+                    return res.status(400).json({
+                        success: false,
+                        message: `Could not verify Razorpay refund status: ${err.message}`
+                    });
+                }
+            }
         }
         if (difference > 0) {
             const paidTopUpLink = await prisma_1.prisma.paymentLinkRequest.findFirst({
@@ -589,7 +651,11 @@ async function changePlan(req, res) {
             customerId,
             newPlanDuration,
             amountHandled: Number.isFinite(requestedAmount) && requestedAmount >= 0 ? requestedAmount : undefined,
-            paymentMethod: "Manual"
+            // A Razorpay auto-refund (see refundPlanChangeViaRazorpay below)
+            // already has a real transaction id to attribute this receipt to;
+            // otherwise it's the admin's manual proof-upload path.
+            paymentMethod: customer.planChangeRazorpayRefundId ? "Razorpay" : "Manual",
+            transactionId: customer.planChangeRazorpayRefundId
         });
         if (result.status === "not_found") {
             return res.status(404).json({ success: false, message: "Customer not found" });
@@ -601,6 +667,54 @@ async function changePlan(req, res) {
     }
     catch (error) {
         res.status(500).json({ success: false, message: error.message });
+    }
+}
+// Issues the deposit-difference refund for a plan downgrade directly
+// through Razorpay, against the customer's original deposit payment —
+// instead of the admin having to pay them some other way and upload proof.
+// Only records the Razorpay refund id here; the actual receipt is created
+// once "Confirm & Apply Plan Change" runs (see changePlan above), so this
+// alone doesn't change the customer's plan yet.
+async function refundPlanChangeViaRazorpay(req, res) {
+    try {
+        const amount = Number(req.body.amount);
+        if (!amount || amount <= 0) {
+            return res.status(400).json({ success: false, message: "A valid amount is required" });
+        }
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
+        if (!customer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        // Exclusivity check: reject Razorpay refund if manual proof exists
+        if (customer.planChangeRefundProofUrl) {
+            return res.status(400).json({
+                success: false,
+                message: "Cannot refund via Razorpay because a manual refund proof has already been uploaded."
+            });
+        }
+        // Idempotency check: if Razorpay refund was already created/initiated, return it
+        if (customer.planChangeRazorpayRefundId) {
+            try {
+                const existingRefund = await razorpay_1.razorpay.refunds.fetch(customer.planChangeRazorpayRefundId);
+                return res.json({ success: true, customer, refund: existingRefund });
+            }
+            catch {
+                return res.json({
+                    success: true,
+                    customer,
+                    refund: { id: customer.planChangeRazorpayRefundId, status: "processed" }
+                });
+            }
+        }
+        const refund = await (0, refund_service_1.refundPlanChangeDeposit)(customer.id, amount);
+        const updated = await prisma_1.prisma.customer.update({
+            where: { id: customer.id },
+            data: { planChangeRazorpayRefundId: refund.id }
+        });
+        res.json({ success: true, customer: updated, refund });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.error?.description || error.message });
     }
 }
 async function triggerRenewals(_req, res) {

@@ -37,7 +37,9 @@ router.get("/admin/customers/:id/payment-links", requireAdmin_1.requireAdmin, ad
 router.post("/admin/payment-links/:linkId/mark-paid", requireAdmin_1.requireAdmin, admin_controller_1.markPaymentLinkAsPaid);
 router.post("/admin/customers/:id/payout", requireAdmin_1.requireAdmin, upload_middleware_1.upload.fields([{ name: "proofFile", maxCount: 1 }]), admin_controller_1.createPayout);
 router.get("/admin/customers/:id/payouts", requireAdmin_1.requireAdmin, admin_controller_1.listCustomerPayouts);
+router.post("/admin/customers/:id/refund-now", requireAdmin_1.requireAdmin, admin_controller_1.refundNow);
 router.post("/admin/customers/:id/change-plan", requireAdmin_1.requireAdmin, admin_controller_1.changePlan);
+router.post("/admin/customers/:id/plan-change-refund", requireAdmin_1.requireAdmin, admin_controller_1.refundPlanChangeViaRazorpay);
 router.get("/admin/customers/:id/invoices", requireAdmin_1.requireAdmin, invoice_controller_1.listCustomerInvoices);
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin_1.requireAdmin, invoice_controller_1.downloadInvoicePdf);
 router.get("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, returnProcess_controller_1.listReturnEvents);

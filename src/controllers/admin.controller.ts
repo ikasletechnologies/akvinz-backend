@@ -320,14 +320,28 @@ export async function uploadCustomerDocuments(req: Request, res: Response): Prom
       return res.status(400).json({ success: false, message: "No file uploaded" });
     }
 
+    const customerId = req.params.id as string;
+    const existingCustomer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!existingCustomer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
     const data: Record<string, string> = {};
     for (const [uploadField, dbField] of Object.entries(DOCUMENT_UPLOAD_FIELDS)) {
       const url = buildFileUrl(files, uploadField);
       if (url) data[dbField] = url;
     }
 
+    // Exclusivity check: reject manual proof if Razorpay refund has been initiated
+    if (data.planChangeRefundProofUrl && existingCustomer.planChangeRazorpayRefundId) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot upload manual proof because a Razorpay refund has already been initiated/processed."
+      });
+    }
+
     const customer = await prisma.customer.update({
-      where: { id: req.params.id as string },
+      where: { id: customerId },
       data
     });
 
@@ -628,11 +642,32 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
     }
 
     const difference = securityDepositAmount(newPlanDuration) - securityDepositAmount(customer.planDuration);
-    if (difference < 0 && !customer.planChangeRefundProofUrl && !customer.planChangeRazorpayRefundId) {
-      return res.status(400).json({
-        success: false,
-        message: "Refund the deposit via Razorpay, or upload proof it was sent, before confirming this downgrade."
-      });
+    if (difference < 0) {
+      if (!customer.planChangeRefundProofUrl && !customer.planChangeRazorpayRefundId) {
+        return res.status(400).json({
+          success: false,
+          message: "Refund the deposit via Razorpay, or upload proof it was sent, before confirming this downgrade."
+        });
+      }
+      
+      // Verify Razorpay refund state if it exists
+      if (customer.planChangeRazorpayRefundId) {
+        try {
+          const refundObj = await razorpay.refunds.fetch(customer.planChangeRazorpayRefundId);
+          if (refundObj.status === "failed") {
+            return res.status(400).json({
+              success: false,
+              message: "The Razorpay refund failed. Please retry the refund or settle manually."
+            });
+          }
+        } catch (err: any) {
+          // If we fail to fetch (e.g. network issue), reject to prevent applying unpaid plan
+          return res.status(400).json({
+            success: false,
+            message: `Could not verify Razorpay refund status: ${err.message}`
+          });
+        }
+      }
     }
     if (difference > 0) {
       const paidTopUpLink = await prisma.paymentLinkRequest.findFirst({
@@ -687,6 +722,28 @@ export async function refundPlanChangeViaRazorpay(req: Request, res: Response): 
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
     if (!customer) {
       return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    // Exclusivity check: reject Razorpay refund if manual proof exists
+    if (customer.planChangeRefundProofUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot refund via Razorpay because a manual refund proof has already been uploaded."
+      });
+    }
+
+    // Idempotency check: if Razorpay refund was already created/initiated, return it
+    if (customer.planChangeRazorpayRefundId) {
+      try {
+        const existingRefund = await razorpay.refunds.fetch(customer.planChangeRazorpayRefundId);
+        return res.json({ success: true, customer, refund: existingRefund });
+      } catch {
+        return res.json({
+          success: true,
+          customer,
+          refund: { id: customer.planChangeRazorpayRefundId, status: "processed" }
+        });
+      }
     }
 
     const refund = await refundPlanChangeDeposit(customer.id, amount);

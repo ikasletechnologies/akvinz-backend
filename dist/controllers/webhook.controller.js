@@ -8,8 +8,8 @@ const crypto_1 = __importDefault(require("crypto"));
 const prisma_1 = require("../config/prisma");
 const env_1 = require("../config/env");
 const paymentLink_service_1 = require("../services/paymentLink.service");
-const invoice_service_1 = require("../services/invoice.service");
 const registration_service_1 = require("../services/registration.service");
+const autopay_service_1 = require("../services/autopay.service");
 // Razorpay calls this with the raw request body (see app.ts, which mounts
 // this route with express.raw() ahead of the global express.json()) so the
 // HMAC signature can be verified against the exact bytes Razorpay signed.
@@ -71,33 +71,32 @@ async function razorpayWebhook(req, res) {
                 where: { razorpaySubscriptionId: subEntity.id }
             });
             if (customer) {
-                // Idempotent: Razorpay can redeliver the same webhook, and the
-                // client-side verify call may have already recorded this same
-                // charge as the mandate's first payment.
-                const alreadyRecorded = await prisma_1.prisma.invoice.findFirst({
-                    where: { transactionId: paymentEntity.id }
+                await prisma_1.prisma.customer.update({
+                    where: { id: customer.id },
+                    data: { autopayStatus: "ACTIVE" }
                 });
-                if (!alreadyRecorded) {
-                    const currentEnd = subEntity.current_end ? new Date(subEntity.current_end * 1000) : null;
-                    await prisma_1.prisma.customer.update({
-                        where: { id: customer.id },
-                        data: {
-                            lastPaymentDate: new Date(),
-                            subscriptionStatus: "ACTIVE",
-                            autopayStatus: "ACTIVE",
-                            ...(currentEnd ? { subscriptionEnd: currentEnd } : {})
-                        }
-                    });
-                    await (0, invoice_service_1.createInvoice)({
-                        type: "RENTAL",
-                        customerId: customer.id,
-                        productType: "Water Purifier",
-                        amount: Math.round((paymentEntity.amount ?? 0) / 100),
-                        paymentMethod: "Razorpay",
-                        transactionId: paymentEntity.id,
-                        status: "FUNDED"
-                    });
-                }
+                // This is a server-to-server delivery racing the browser's own
+                // /subscription/autopay/verify call for the exact same charge — it
+                // usually arrives first. Both paths now funnel through
+                // activateRentalCycle so whichever wins fully populates the
+                // customer record (rentalPlanDuration, subscriptionStart,
+                // billingDay, subscriptionEnd) instead of only the fields this
+                // handler used to set directly; activateRentalCycle's own
+                // transactionId check makes running it from both paths a no-op the
+                // second time.
+                //
+                // rentalPlanDuration rides along in the subscription's notes (set
+                // at creation in createAutopaySubscription) since Razorpay's
+                // payload has no other way to say which plan this mandate is for.
+                // Falls back to whatever plan is already on file for subscriptions
+                // created before that note existed.
+                const rentalPlanDuration = Number(subEntity.notes?.rentalPlanDuration) || customer.rentalPlanDuration || customer.planDuration;
+                await (0, autopay_service_1.activateRentalCycle)(customer.id, {
+                    rentalPlanDuration,
+                    rentalAmount: Math.round((paymentEntity.amount ?? 0) / 100),
+                    transactionId: paymentEntity.id,
+                    paymentMethod: "Razorpay"
+                });
             }
         }
     }

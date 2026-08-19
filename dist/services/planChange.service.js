@@ -34,9 +34,10 @@ async function applyPlanChange(input) {
             planDuration: newPlanDuration,
             rentalPlanDuration: newPlanDuration,
             rentalAmount: (0, planPricing_1.rentalAmountForPlan)(newPlanDuration),
-            // One-time proof for this specific downgrade — clear it so the next
-            // downgrade can't be confirmed off a stale upload.
-            planChangeRefundProofUrl: null
+            // One-time proof for this specific downgrade — clear both so the next
+            // downgrade can't be confirmed off a stale upload or refund id.
+            planChangeRefundProofUrl: null,
+            planChangeRazorpayRefundId: null
         }
     });
     const invoice = await (0, invoice_service_1.createInvoice)(difference > 0
