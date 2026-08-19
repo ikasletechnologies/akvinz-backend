@@ -51,10 +51,15 @@ model Customer {
   razorpayPlanId         String?
   autopayStatus          String?  @default("NOT_SET") // NOT_SET, PENDING_AUTH, ACTIVE, FAILED, CANCELLED
 
-  // Proof (screenshot/receipt) that a plan-downgrade deposit refund was
-  // actually sent to the customer. Required before the admin can confirm a
-  // downgrade in "Change Plan"; cleared once the plan change is applied.
+  // Proof that a plan-downgrade deposit refund was actually sent to the
+  // customer — either one satisfies "Confirm & Apply Plan Change" for a
+  // downgrade. planChangeRefundProofUrl is a manually-uploaded
+  // screenshot/receipt; planChangeRazorpayRefundId is set when the admin
+  // instead used the "Refund via Razorpay" button, which issues a real
+  // Razorpay refund against the customer's original deposit payment. Both
+  // are cleared once the plan change is applied.
   planChangeRefundProofUrl String?
+  planChangeRazorpayRefundId String?
 
   // Assigned product details, set manually by admin (not collected from customer)
   modelName          String?

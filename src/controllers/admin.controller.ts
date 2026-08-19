@@ -7,7 +7,7 @@ import { processRenewals } from "../services/billing.service";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
 import { createInvoice } from "../services/invoice.service";
-import { refundSecurityDeposit } from "../services/refund.service";
+import { refundSecurityDeposit, refundPlanChangeDeposit } from "../services/refund.service";
 import { securityDepositAmount } from "../utils/planPricing";
 import { buildFileUrl } from "../utils/fileUrl";
 
@@ -628,10 +628,10 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
     }
 
     const difference = securityDepositAmount(newPlanDuration) - securityDepositAmount(customer.planDuration);
-    if (difference < 0 && !customer.planChangeRefundProofUrl) {
+    if (difference < 0 && !customer.planChangeRefundProofUrl && !customer.planChangeRazorpayRefundId) {
       return res.status(400).json({
         success: false,
-        message: "Upload proof that the deposit refund was sent to the customer before confirming this downgrade."
+        message: "Refund the deposit via Razorpay, or upload proof it was sent, before confirming this downgrade."
       });
     }
     if (difference > 0) {
@@ -651,7 +651,11 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
       customerId,
       newPlanDuration,
       amountHandled: Number.isFinite(requestedAmount) && requestedAmount >= 0 ? requestedAmount : undefined,
-      paymentMethod: "Manual"
+      // A Razorpay auto-refund (see refundPlanChangeViaRazorpay below)
+      // already has a real transaction id to attribute this receipt to;
+      // otherwise it's the admin's manual proof-upload path.
+      paymentMethod: customer.planChangeRazorpayRefundId ? "Razorpay" : "Manual",
+      transactionId: customer.planChangeRazorpayRefundId
     });
 
     if (result.status === "not_found") {
@@ -664,6 +668,37 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
     res.json({ success: true, customer: result.customer, invoice: result.invoice, difference: result.difference, recordedAmount: result.recordedAmount });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+// Issues the deposit-difference refund for a plan downgrade directly
+// through Razorpay, against the customer's original deposit payment —
+// instead of the admin having to pay them some other way and upload proof.
+// Only records the Razorpay refund id here; the actual receipt is created
+// once "Confirm & Apply Plan Change" runs (see changePlan above), so this
+// alone doesn't change the customer's plan yet.
+export async function refundPlanChangeViaRazorpay(req: Request, res: Response): Promise<any> {
+  try {
+    const amount = Number(req.body.amount);
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, message: "A valid amount is required" });
+    }
+
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    const refund = await refundPlanChangeDeposit(customer.id, amount);
+
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: { planChangeRazorpayRefundId: refund.id }
+    });
+
+    res.json({ success: true, customer: updated, refund });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.error?.description || error.message });
   }
 }
 
