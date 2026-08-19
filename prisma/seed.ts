@@ -8,7 +8,7 @@ dotenv.config();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
-
+//
 // Sample customers covering the states the admin dashboard needs to display:
 // a fresh signup, an active rental subscriber, and a customer mid-return/refund.
 const customers: Prisma.CustomerCreateInput[] = [];
