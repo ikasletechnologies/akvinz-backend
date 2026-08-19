@@ -80,7 +80,11 @@ export async function createAutopaySubscription(customerId: string, rentalPlanDu
     plan_id: plan.id,
     customer_notify: 1,
     total_count: 100,
-    notes: { customerId }
+    // rentalPlanDuration is echoed back on every subscription.charged webhook
+    // (see webhook.controller.ts) — that's a separate, faster delivery path
+    // than the browser's own verify call, and has no other way to know which
+    // plan this mandate is for.
+    notes: { customerId, rentalPlanDuration: String(rentalPlanDuration) }
   });
 
   await prisma.customer.update({

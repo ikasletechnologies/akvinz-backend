@@ -3,8 +3,8 @@ import crypto from "crypto";
 import { prisma } from "../config/prisma";
 import { env } from "../config/env";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
-import { createInvoice } from "../services/invoice.service";
 import { finalizeRegistration } from "../services/registration.service";
+import { activateRentalCycle } from "../services/autopay.service";
 
 // Razorpay calls this with the raw request body (see app.ts, which mounts
 // this route with express.raw() ahead of the global express.json()) so the
@@ -80,36 +80,35 @@ export async function razorpayWebhook(req: Request, res: Response): Promise<any>
       });
 
       if (customer) {
-        // Idempotent: Razorpay can redeliver the same webhook, and the
-        // client-side verify call may have already recorded this same
-        // charge as the mandate's first payment.
-        const alreadyRecorded = await prisma.invoice.findFirst({
-          where: { transactionId: paymentEntity.id }
+        await prisma.customer.update({
+          where: { id: customer.id },
+          data: { autopayStatus: "ACTIVE" }
         });
 
-        if (!alreadyRecorded) {
-          const currentEnd = subEntity.current_end ? new Date(subEntity.current_end * 1000) : null;
+        // This is a server-to-server delivery racing the browser's own
+        // /subscription/autopay/verify call for the exact same charge — it
+        // usually arrives first. Both paths now funnel through
+        // activateRentalCycle so whichever wins fully populates the
+        // customer record (rentalPlanDuration, subscriptionStart,
+        // billingDay, subscriptionEnd) instead of only the fields this
+        // handler used to set directly; activateRentalCycle's own
+        // transactionId check makes running it from both paths a no-op the
+        // second time.
+        //
+        // rentalPlanDuration rides along in the subscription's notes (set
+        // at creation in createAutopaySubscription) since Razorpay's
+        // payload has no other way to say which plan this mandate is for.
+        // Falls back to whatever plan is already on file for subscriptions
+        // created before that note existed.
+        const rentalPlanDuration =
+          Number(subEntity.notes?.rentalPlanDuration) || customer.rentalPlanDuration || customer.planDuration;
 
-          await prisma.customer.update({
-            where: { id: customer.id },
-            data: {
-              lastPaymentDate: new Date(),
-              subscriptionStatus: "ACTIVE",
-              autopayStatus: "ACTIVE",
-              ...(currentEnd ? { subscriptionEnd: currentEnd } : {})
-            }
-          });
-
-          await createInvoice({
-            type: "RENTAL",
-            customerId: customer.id,
-            productType: "Water Purifier",
-            amount: Math.round((paymentEntity.amount ?? 0) / 100),
-            paymentMethod: "Razorpay",
-            transactionId: paymentEntity.id,
-            status: "FUNDED"
-          });
-        }
+        await activateRentalCycle(customer.id, {
+          rentalPlanDuration,
+          rentalAmount: Math.round((paymentEntity.amount ?? 0) / 100),
+          transactionId: paymentEntity.id,
+          paymentMethod: "Razorpay"
+        });
       }
     }
   }
