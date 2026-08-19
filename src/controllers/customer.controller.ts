@@ -2,8 +2,8 @@ import { Request, Response } from "express";
 import { Prisma, CustomerDraft } from "@prisma/client";
 import { prisma } from "../config/prisma";
 import { buildFileUrl } from "../utils/fileUrl";
-import { createInvoice } from "../services/invoice.service";
 import { cancelAutopay } from "../services/autopay.service";
+import { refundSecurityDeposit } from "../services/refund.service";
 
 type DraftUpsertResult =
   | { status: "customer_exists" }
@@ -361,23 +361,23 @@ export async function closeAccount(req: Request, res: Response): Promise<any> {
       return res.status(400).json({ success: false, message: "Refund amount has not been finalized yet" });
     }
 
+    // Move the money via Razorpay before marking the account as refunded —
+    // if this fails (amount exceeds what's refundable, refund window
+    // expired, network error), the customer must stay PENDING_REFUND rather
+    // than being marked REFUNDED with nothing actually sent.
+    const { invoice } = await refundSecurityDeposit(
+      customerId,
+      customer.refundAmount,
+      "Refund of security deposit following product return"
+    );
+
     const updated = await prisma.customer.update({
       where: { id: customerId },
       data: { paymentStatus: "REFUNDED" }
     });
 
-    const invoice = await createInvoice({
-      type: "REFUND",
-      customerId,
-      productType: "Security Deposit Refund",
-      amount: customer.refundAmount,
-      paymentMethod: "Manual",
-      status: "REFUNDED",
-      reason: "Refund of security deposit following product return"
-    });
-
     res.json({ success: true, customer: updated, invoiceId: invoice.id });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({ success: false, message: error.error?.description || error.message });
   }
 }
