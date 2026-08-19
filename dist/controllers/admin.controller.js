@@ -25,6 +25,10 @@ exports.refundPlanChangeViaRazorpay = refundPlanChangeViaRazorpay;
 exports.requestRefundOtp = requestRefundOtp;
 exports.verifyRefundOtpAndExecute = verifyRefundOtpAndExecute;
 exports.cancelRefundOtp = cancelRefundOtp;
+exports.requestPayoutOtp = requestPayoutOtp;
+exports.verifyPayoutOtpAndExecute = verifyPayoutOtpAndExecute;
+exports.cancelPayout = cancelPayout;
+exports.getCustomerMoneyTransactions = getCustomerMoneyTransactions;
 exports.triggerRenewals = triggerRenewals;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const prisma_1 = require("../config/prisma");
@@ -885,6 +889,285 @@ async function cancelRefundOtp(req, res) {
             }
         });
         res.json({ success: true, customer: updated });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+async function requestPayoutOtp(req, res) {
+    try {
+        const customerId = req.params.id;
+        const amountPaise = Number(req.body.amountPaise);
+        const { reason } = req.body;
+        if (!amountPaise || amountPaise <= 0) {
+            return res.status(400).json({ success: false, message: "Valid amount in paise is required" });
+        }
+        if (!reason) {
+            return res.status(400).json({ success: false, message: "Reason is required" });
+        }
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
+        if (!customer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        // Verify recipient details are present
+        const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
+        const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
+        const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
+        if (!bankAccountNumber || !bankIfscCode || !bankAccountHolderName) {
+            return res.status(400).json({
+                success: false,
+                message: "Customer bank account details (account number, IFSC, name) must be saved first."
+            });
+        }
+        // Mask bank account number for safety snapshot
+        const maskedAccount = `••••${bankAccountNumber.slice(-4)}`;
+        const recipientNameSnapshot = bankAccountHolderName;
+        const recipientIdentifierSnapshot = `${customer.bankName || customer.refundBankName || "Bank"} (${maskedAccount})`;
+        // Generate unique idempotency key
+        const idempotencyKey = crypto.randomUUID();
+        // Call Twilio Verify API to send OTP
+        const verification = await twilio_1.twilioClient.verify.v2
+            .services(env_1.env.twilio.verifyServiceSid)
+            .verifications.create({
+            to: env_1.env.admin.mobile,
+            channel: "sms",
+        });
+        // Create MoneyTransaction record in DRAFT/OTP_PENDING status
+        const otpChallengeId = verification.sid;
+        const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+        const transaction = await prisma_1.prisma.moneyTransaction.create({
+            data: {
+                customerId: customer.id,
+                direction: "PAY_TO_CUSTOMER",
+                amountPaise,
+                reason,
+                method: "RAZORPAY_PAYOUT",
+                status: "OTP_PENDING",
+                recipientNameSnapshot,
+                recipientIdentifierSnapshot,
+                idempotencyKey,
+                otpChallengeId,
+                otpExpiresAt,
+                createdBy: env_1.env.admin.email,
+            }
+        });
+        const rawMobile = env_1.env.admin.mobile;
+        const maskedMobile = `••••${rawMobile.slice(-4)}`;
+        res.json({
+            success: true,
+            transactionId: transaction.id,
+            maskedMobile,
+            expiresIn: 300,
+        });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+async function verifyPayoutOtpAndExecute(req, res) {
+    try {
+        const { transactionId, code } = req.body;
+        if (!transactionId || !code) {
+            return res.status(400).json({ success: false, message: "Transaction ID and OTP code are required" });
+        }
+        // Fetch the transaction
+        const transaction = await prisma_1.prisma.moneyTransaction.findUnique({
+            where: { id: transactionId },
+            include: { customer: true }
+        });
+        if (!transaction) {
+            return res.status(404).json({ success: false, message: "Transaction not found" });
+        }
+        if (transaction.status !== "OTP_PENDING") {
+            return res.status(400).json({ success: false, message: "Transaction is not in OTP_PENDING status" });
+        }
+        if (transaction.otpExpiresAt && transaction.otpExpiresAt < new Date()) {
+            return res.status(400).json({ success: false, message: "OTP has expired" });
+        }
+        // Verify OTP via Twilio
+        const verificationCheck = await twilio_1.twilioClient.verify.v2
+            .services(env_1.env.twilio.verifyServiceSid)
+            .verificationChecks.create({
+            to: env_1.env.admin.mobile,
+            code,
+        });
+        if (verificationCheck.status !== "approved") {
+            await prisma_1.prisma.moneyTransaction.update({
+                where: { id: transactionId },
+                data: { otpAttempts: { increment: 1 } }
+            });
+            return res.status(400).json({ success: false, message: "Invalid OTP code" });
+        }
+        // Transition state to PROCESSING to lock transaction
+        await prisma_1.prisma.moneyTransaction.update({
+            where: { id: transactionId },
+            data: { status: "PROCESSING" }
+        });
+        const customer = transaction.customer;
+        let contactId = customer.razorpayXContactId;
+        let fundAccountId = customer.razorpayXFundAccountId;
+        const basicAuth = Buffer.from(`${env_1.env.razorpay.keyId}:${env_1.env.razorpay.keySecret}`).toString("base64");
+        // 1. Create contact if not exists
+        if (!contactId) {
+            const contactRes = await fetch("https://api.razorpay.com/v1/contacts", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Basic ${basicAuth}`
+                },
+                body: JSON.stringify({
+                    name: customer.fullName,
+                    email: customer.email,
+                    contact: customer.mobileNumber,
+                    type: "customer",
+                    reference_id: customer.id
+                })
+            });
+            const contactData = await contactRes.json();
+            if (!contactRes.ok) {
+                throw new Error(contactData.error?.description || "Failed to create RazorpayX Contact");
+            }
+            contactId = contactData.id;
+            await prisma_1.prisma.customer.update({
+                where: { id: customer.id },
+                data: { razorpayXContactId: contactId }
+            });
+        }
+        // 2. Create fund account if not exists
+        if (!fundAccountId) {
+            const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
+            const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
+            const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
+            const faRes = await fetch("https://api.razorpay.com/v1/fund_accounts", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Basic ${basicAuth}`
+                },
+                body: JSON.stringify({
+                    contact_id: contactId,
+                    account_type: "bank_account",
+                    bank_account: {
+                        name: bankAccountHolderName,
+                        ifsc: bankIfscCode,
+                        account_number: bankAccountNumber
+                    }
+                })
+            });
+            const faData = await faRes.json();
+            if (!faRes.ok) {
+                throw new Error(faData.error?.description || "Failed to create RazorpayX Fund Account");
+            }
+            fundAccountId = faData.id;
+            await prisma_1.prisma.customer.update({
+                where: { id: customer.id },
+                data: { razorpayXFundAccountId: fundAccountId }
+            });
+        }
+        // 3. Create payout
+        const payoutRes = await fetch("https://api.razorpay.com/v1/payouts", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Basic ${basicAuth}`,
+                "X-Payout-Idempotency": transaction.idempotencyKey
+            },
+            body: JSON.stringify({
+                account_number: env_1.env.razorpay.accountNumberX,
+                fund_account_id: fundAccountId,
+                amount: transaction.amountPaise,
+                currency: "INR",
+                mode: "IMPS",
+                purpose: "refund",
+                narration: transaction.reason.substring(0, 30),
+                reference_id: transaction.id
+            })
+        });
+        const payoutData = await payoutRes.json();
+        if (!payoutRes.ok) {
+            const updatedTx = await prisma_1.prisma.moneyTransaction.update({
+                where: { id: transactionId },
+                data: {
+                    status: "FAILED",
+                    razorpayStatusReason: payoutData.error?.description || "Payout creation failed",
+                }
+            });
+            return res.status(400).json({
+                success: false,
+                message: payoutData.error?.description || "Failed to create RazorpayX Payout",
+                transaction: updatedTx
+            });
+        }
+        let initialStatus = "PROCESSING";
+        const rpStatus = payoutData.status;
+        if (rpStatus === "queued") {
+            initialStatus = "QUEUED";
+        }
+        else if (rpStatus === "pending") {
+            initialStatus = "PENDING";
+        }
+        else if (rpStatus === "rejected") {
+            initialStatus = "REJECTED";
+        }
+        else if (rpStatus === "processed") {
+            initialStatus = "SUCCESS";
+        }
+        else if (rpStatus === "reversed") {
+            initialStatus = "REVERSED";
+        }
+        else if (rpStatus === "failed") {
+            initialStatus = "FAILED";
+        }
+        const finalTx = await prisma_1.prisma.moneyTransaction.update({
+            where: { id: transactionId },
+            data: {
+                status: initialStatus,
+                razorpayPayoutId: payoutData.id,
+                razorpayPayoutStatus: rpStatus,
+                razorpayUtr: payoutData.utr || null,
+                razorpayStatusReason: payoutData.status_details?.reason || null,
+                razorpayStatusDescription: payoutData.status_details?.description || null,
+            }
+        });
+        res.json({ success: true, transaction: finalTx });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+async function cancelPayout(req, res) {
+    try {
+        const { transactionId } = req.body;
+        if (!transactionId) {
+            return res.status(400).json({ success: false, message: "Transaction ID is required" });
+        }
+        const transaction = await prisma_1.prisma.moneyTransaction.findUnique({
+            where: { id: transactionId }
+        });
+        if (!transaction) {
+            return res.status(404).json({ success: false, message: "Transaction not found" });
+        }
+        if (transaction.status !== "DRAFT" && transaction.status !== "OTP_PENDING") {
+            return res.status(400).json({ success: false, message: "Cannot cancel transaction in current status." });
+        }
+        const updated = await prisma_1.prisma.moneyTransaction.update({
+            where: { id: transactionId },
+            data: { status: "CANCELLED" }
+        });
+        res.json({ success: true, transaction: updated });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+async function getCustomerMoneyTransactions(req, res) {
+    try {
+        const customerId = req.params.id;
+        const transactions = await prisma_1.prisma.moneyTransaction.findMany({
+            where: { customerId },
+            orderBy: { createdAt: "desc" }
+        });
+        res.json({ success: true, transactions });
     }
     catch (error) {
         res.status(500).json({ success: false, message: error.message });

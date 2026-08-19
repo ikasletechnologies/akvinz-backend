@@ -87,10 +87,14 @@ model Customer {
   bankIfscCode          String?
   bankAccountNumber     String?
 
+  razorpayXContactId     String?
+  razorpayXFundAccountId String?
+
   invoices          Invoice[]
   returnProcessEvents ReturnProcessEvent[]
   paymentLinks      PaymentLinkRequest[]
   payouts           CustomerPayout[]
+  moneyTransactions MoneyTransaction[]
 
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -218,4 +222,47 @@ model CustomerDraft {
 
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+}
+
+model MoneyTransaction {
+  id                     String    @id @default(cuid())
+  customerId             String
+  customer               Customer  @relation(fields: [customerId], references: [id])
+  direction              String    // PAY_TO_CUSTOMER, COLLECT_FROM_CUSTOMER
+  amountPaise            Int       // in paise
+  currency               String    @default("INR")
+  reason                 String    // Deposit Refund, Overpayment Refund, etc.
+  method                 String    // RAZORPAY_PAYOUT, MANUAL
+  status                 String    @default("DRAFT") // DRAFT, OTP_PENDING, PROCESSING, QUEUED, PENDING, SUCCESS, FAILED, REVERSED, CANCELLED, REJECTED
+  razorpayPayoutId       String?   @unique
+  razorpayPayoutStatus   String?
+  razorpayStatusReason   String?
+  razorpayStatusDescription String?
+  razorpayUtr            String?
+  recipientFundAccountId String?
+  recipientNameSnapshot  String?
+  recipientIdentifierSnapshot String? // Masked bank account or UPI ID
+  idempotencyKey         String    @unique
+  otpChallengeId         String?
+  otpExpiresAt           DateTime?
+  otpAttempts            Int       @default(0)
+  sourceType             String?   // e.g., PLAN_CHANGE_REFUND
+  sourceId               String?   // references original source entity
+  proofUrl               String?   // For manual collections
+  createdBy              String?   // Admin email/ID
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([customerId, createdAt])
+  @@index([status])
+  @@index([razorpayPayoutId])
+}
+
+model RazorpayWebhookEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  eventType   String
+  payoutId    String?
+  receivedAt  DateTime @default(now())
+  processedAt DateTime @default(now())
 }

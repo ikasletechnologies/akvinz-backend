@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.razorpayWebhook = razorpayWebhook;
+exports.razorpayxWebhook = razorpayxWebhook;
 const crypto_1 = __importDefault(require("crypto"));
 const prisma_1 = require("../config/prisma");
 const env_1 = require("../config/env");
@@ -120,6 +121,92 @@ async function razorpayWebhook(req, res) {
                 data: { autopayStatus: "CANCELLED" }
             });
         }
+    }
+    res.json({ success: true });
+}
+async function razorpayxWebhook(req, res) {
+    const signature = req.headers["x-razorpay-signature"];
+    const rawBody = req.body;
+    if (!signature) {
+        return res.status(400).json({ success: false, message: "Missing signature" });
+    }
+    const expectedSignature = crypto_1.default
+        .createHmac("sha256", env_1.env.razorpay.webhookSecretX)
+        .update(rawBody)
+        .digest("hex");
+    if (signature !== expectedSignature) {
+        return res.status(400).json({ success: false, message: "Invalid signature" });
+    }
+    const payload = JSON.parse(rawBody.toString("utf8"));
+    const eventId = payload.event_id;
+    const eventType = payload.event;
+    // Deduplication check
+    if (eventId) {
+        const existingEvent = await prisma_1.prisma.razorpayWebhookEvent.findUnique({
+            where: { eventId }
+        });
+        if (existingEvent) {
+            return res.json({ success: true, message: "Duplicate event skipped" });
+        }
+    }
+    const payoutEntity = payload.payload?.payout?.entity;
+    if (!payoutEntity || !payoutEntity.id) {
+        return res.status(400).json({ success: false, message: "Invalid payout payload" });
+    }
+    const payoutId = payoutEntity.id;
+    const razorpayStatus = payoutEntity.status; // e.g. 'processed', 'reversed', 'failed', 'rejected', 'queued', 'pending'
+    const utr = payoutEntity.utr || null;
+    const failureReason = payoutEntity.failure_reason || null;
+    const statusDetails = payoutEntity.status_details || {};
+    const statusReason = statusDetails.reason || failureReason || null;
+    const statusDescription = statusDetails.description || null;
+    // Map RazorpayX status to internal MoneyTransaction status
+    let internalStatus = "PROCESSING";
+    if (razorpayStatus === "processed") {
+        internalStatus = "SUCCESS";
+    }
+    else if (razorpayStatus === "reversed") {
+        internalStatus = "REVERSED";
+    }
+    else if (razorpayStatus === "failed") {
+        internalStatus = "FAILED";
+    }
+    else if (razorpayStatus === "rejected") {
+        internalStatus = "REJECTED";
+    }
+    else if (razorpayStatus === "queued") {
+        internalStatus = "QUEUED";
+    }
+    else if (razorpayStatus === "pending") {
+        internalStatus = "PENDING";
+    }
+    else if (razorpayStatus === "cancelled") {
+        internalStatus = "CANCELLED";
+    }
+    const transaction = await prisma_1.prisma.moneyTransaction.findUnique({
+        where: { razorpayPayoutId: payoutId }
+    });
+    if (transaction) {
+        await prisma_1.prisma.moneyTransaction.update({
+            where: { id: transaction.id },
+            data: {
+                status: internalStatus,
+                razorpayPayoutStatus: razorpayStatus,
+                razorpayUtr: utr || transaction.razorpayUtr,
+                razorpayStatusReason: statusReason || transaction.razorpayStatusReason,
+                razorpayStatusDescription: statusDescription || transaction.razorpayStatusDescription
+            }
+        });
+    }
+    // Save webhook event to prevent duplicate processing
+    if (eventId) {
+        await prisma_1.prisma.razorpayWebhookEvent.create({
+            data: {
+                eventId,
+                eventType,
+                payoutId,
+            }
+        });
     }
     res.json({ success: true });
 }

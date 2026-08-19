@@ -43,6 +43,10 @@ router.post("/admin/customers/:id/plan-change-refund", requireAdmin_1.requireAdm
 router.post("/admin/customers/:id/plan-change/refund/request-otp", requireAdmin_1.requireAdmin, admin_controller_1.requestRefundOtp);
 router.post("/admin/customers/:id/plan-change/refund/verify-otp", requireAdmin_1.requireAdmin, admin_controller_1.verifyRefundOtpAndExecute);
 router.post("/admin/customers/:id/plan-change/refund/cancel", requireAdmin_1.requireAdmin, admin_controller_1.cancelRefundOtp);
+router.post("/admin/customers/:id/money-transactions/payout/request-otp", requireAdmin_1.requireAdmin, admin_controller_1.requestPayoutOtp);
+router.post("/admin/money-transactions/payout/verify-otp", requireAdmin_1.requireAdmin, admin_controller_1.verifyPayoutOtpAndExecute);
+router.post("/admin/money-transactions/payout/cancel", requireAdmin_1.requireAdmin, admin_controller_1.cancelPayout);
+router.get("/admin/customers/:id/money-transactions", requireAdmin_1.requireAdmin, admin_controller_1.getCustomerMoneyTransactions);
 router.get("/admin/customers/:id/invoices", requireAdmin_1.requireAdmin, invoice_controller_1.listCustomerInvoices);
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin_1.requireAdmin, invoice_controller_1.downloadInvoicePdf);
 router.get("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, returnProcess_controller_1.listReturnEvents);

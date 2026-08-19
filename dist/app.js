@@ -20,6 +20,7 @@ app.use((0, morgan_1.default)("dev"));
 // webhook signature is an HMAC over the exact request bytes, which the JSON
 // parser would otherwise consume and reserialize (breaking the signature).
 app.post("/api/webhooks/razorpay", express_1.default.raw({ type: "application/json" }), webhook_controller_1.razorpayWebhook);
+app.post("/api/webhooks/razorpayx/payout", express_1.default.raw({ type: "application/json" }), webhook_controller_1.razorpayxWebhook);
 app.use(express_1.default.json());
 app.use(express_1.default.urlencoded({ extended: true }));
 app.use("/uploads", express_1.default.static(env_1.env.uploadDir));
