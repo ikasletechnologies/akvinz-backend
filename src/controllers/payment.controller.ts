@@ -88,22 +88,35 @@ export async function verifyRentalPayment(req: Request, res: Response): Promise<
 
     const isValid = verifyRazorpaySignature(razorpay_order_id, razorpay_payment_id, razorpay_signature);
 
-    if (isValid) {
-      let invoiceId: string | undefined;
-      if (customerId) {
-        const { invoice } = await activateRentalCycle(customerId, {
-          rentalPlanDuration,
-          rentalAmount,
-          transactionId: razorpay_payment_id,
-          orderId: razorpay_order_id,
-          paymentMethod: "Razorpay"
-        });
-        invoiceId = invoice.id;
-      }
-      return res.json({ success: true, message: "Rental Payment verified successfully", invoiceId });
-    } else {
+    if (!isValid) {
       return res.status(400).json({ success: false, message: "Invalid signature sent!" });
     }
+
+    // A valid signature only proves this order_id/payment_id pair genuinely
+    // came from Razorpay — it does NOT prove the payment was captured.
+    // Razorpay's checkout can call this success path in states its own
+    // backend later resolves as failed (a known gap for UPI intent, where
+    // the bank's confirmation can arrive late or never) — see the "delay in
+    // response from the UPI app" failure reason. Confirming status here
+    // directly against Razorpay's API is what actually stops a failed
+    // payment from producing a receipt.
+    const payment = await razorpay.payments.fetch(razorpay_payment_id);
+    if (payment.status !== "captured") {
+      return res.status(400).json({ success: false, message: `Payment not captured (status: ${payment.status}). No receipt was created.` });
+    }
+
+    let invoiceId: string | undefined;
+    if (customerId) {
+      const { invoice } = await activateRentalCycle(customerId, {
+        rentalPlanDuration,
+        rentalAmount,
+        transactionId: razorpay_payment_id,
+        orderId: razorpay_order_id,
+        paymentMethod: "Razorpay"
+      });
+      invoiceId = invoice.id;
+    }
+    return res.json({ success: true, message: "Rental Payment verified successfully", invoiceId });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

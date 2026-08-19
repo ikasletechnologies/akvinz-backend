@@ -7,6 +7,7 @@ import { processRenewals } from "../services/billing.service";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
 import { createInvoice } from "../services/invoice.service";
+import { refundSecurityDeposit } from "../services/refund.service";
 import { securityDepositAmount } from "../utils/planPricing";
 import { buildFileUrl } from "../utils/fileUrl";
 
@@ -557,6 +558,40 @@ export async function listCustomerPayouts(req: Request, res: Response): Promise<
     res.json({ success: true, payouts });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+// Admin-triggered equivalent of the customer confirming on /closeForm —
+// refunds the security deposit via Razorpay immediately instead of waiting
+// on the customer to accept the fixed amount themselves.
+export async function refundNow(req: Request, res: Response): Promise<any> {
+  try {
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    if (customer.paymentStatus !== "PENDING_REFUND") {
+      return res.status(400).json({ success: false, message: "No pending refund found for this account" });
+    }
+    if (customer.refundAmount === null) {
+      return res.status(400).json({ success: false, message: "Refund amount has not been finalized yet" });
+    }
+
+    const { invoice } = await refundSecurityDeposit(
+      customer.id,
+      customer.refundAmount,
+      "Refund of security deposit following product return (admin-initiated)"
+    );
+
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: { paymentStatus: "REFUNDED" }
+    });
+
+    res.json({ success: true, customer: updated, invoiceId: invoice.id });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.error?.description || error.message });
   }
 }
 
