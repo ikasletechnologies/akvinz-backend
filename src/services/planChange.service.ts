@@ -47,7 +47,9 @@ export async function applyPlanChange(input: ApplyPlanChangeInput) {
       // One-time proof for this specific downgrade — clear both so the next
       // downgrade can't be confirmed off a stale upload or refund id.
       planChangeRefundProofUrl: null,
-      planChangeRazorpayRefundId: null
+      planChangeRazorpayRefundId: null,
+      planChangeRefundStatus: "NOT_STARTED",
+      planChangeRefundAmount: null
     }
   });
 

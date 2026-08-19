@@ -40,6 +40,9 @@ router.get("/admin/customers/:id/payouts", requireAdmin_1.requireAdmin, admin_co
 router.post("/admin/customers/:id/refund-now", requireAdmin_1.requireAdmin, admin_controller_1.refundNow);
 router.post("/admin/customers/:id/change-plan", requireAdmin_1.requireAdmin, admin_controller_1.changePlan);
 router.post("/admin/customers/:id/plan-change-refund", requireAdmin_1.requireAdmin, admin_controller_1.refundPlanChangeViaRazorpay);
+router.post("/admin/customers/:id/plan-change/refund/request-otp", requireAdmin_1.requireAdmin, admin_controller_1.requestRefundOtp);
+router.post("/admin/customers/:id/plan-change/refund/verify-otp", requireAdmin_1.requireAdmin, admin_controller_1.verifyRefundOtpAndExecute);
+router.post("/admin/customers/:id/plan-change/refund/cancel", requireAdmin_1.requireAdmin, admin_controller_1.cancelRefundOtp);
 router.get("/admin/customers/:id/invoices", requireAdmin_1.requireAdmin, invoice_controller_1.listCustomerInvoices);
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin_1.requireAdmin, invoice_controller_1.downloadInvoicePdf);
 router.get("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, returnProcess_controller_1.listReturnEvents);

@@ -31,5 +31,6 @@ export const env = {
     email: required("ADMIN_EMAIL"),
     password: required("ADMIN_PASSWORD"),
     jwtSecret: required("ADMIN_JWT_SECRET"),
+    mobile: required("ADMIN_MOBILE"),
   },
 };

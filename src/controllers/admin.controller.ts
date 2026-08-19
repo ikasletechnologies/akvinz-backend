@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { prisma } from "../config/prisma";
 import { env } from "../config/env";
 import { razorpay } from "../config/razorpay";
+import { twilioClient } from "../config/twilio";
 import { processRenewals } from "../services/billing.service";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
@@ -333,7 +334,7 @@ export async function uploadCustomerDocuments(req: Request, res: Response): Prom
     }
 
     // Exclusivity check: reject manual proof if Razorpay refund has been initiated
-    if (data.planChangeRefundProofUrl && existingCustomer.planChangeRazorpayRefundId) {
+    if (data.planChangeRefundProofUrl && (existingCustomer.planChangeRazorpayRefundId || existingCustomer.planChangeRefundStatus === "REFUND_SUCCESS" || existingCustomer.planChangeRefundStatus === "REFUND_PROCESSING")) {
       return res.status(400).json({
         success: false,
         message: "Cannot upload manual proof because a Razorpay refund has already been initiated/processed."
@@ -643,7 +644,7 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
 
     const difference = securityDepositAmount(newPlanDuration) - securityDepositAmount(customer.planDuration);
     if (difference < 0) {
-      if (!customer.planChangeRefundProofUrl && !customer.planChangeRazorpayRefundId) {
+      if (!customer.planChangeRefundProofUrl && customer.planChangeRefundStatus !== "REFUND_SUCCESS" && !customer.planChangeRazorpayRefundId) {
         return res.status(400).json({
           success: false,
           message: "Refund the deposit via Razorpay, or upload proof it was sent, before confirming this downgrade."
@@ -756,6 +757,193 @@ export async function refundPlanChangeViaRazorpay(req: Request, res: Response): 
     res.json({ success: true, customer: updated, refund });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.error?.description || error.message });
+  }
+}
+
+export async function requestRefundOtp(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    // Exclusivity: reject if manual refund proof has been uploaded
+    if (customer.planChangeRefundProofUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot refund via Razorpay because a manual refund proof has already been uploaded."
+      });
+    }
+
+    // Check existing status
+    if (customer.planChangeRefundStatus === "REFUND_SUCCESS" || customer.planChangeRazorpayRefundId) {
+      return res.status(400).json({
+        success: false,
+        message: "Refund has already been successfully processed."
+      });
+    }
+    if (customer.planChangeRefundStatus === "REFUND_PROCESSING") {
+      return res.status(400).json({
+        success: false,
+        message: "A refund is currently processing for this customer."
+      });
+    }
+
+    // Calculate required refund amount (original plan deposit - new plan deposit)
+    const newPlanDuration = Number(req.body.newPlanDuration);
+    if (newPlanDuration !== 12 && newPlanDuration !== 24) {
+      return res.status(400).json({ success: false, message: "Plan must be 12 or 24 months" });
+    }
+    const difference = securityDepositAmount(newPlanDuration) - securityDepositAmount(customer.planDuration);
+    if (difference >= 0) {
+      return res.status(400).json({ success: false, message: "This operation is only for plan downgrades (refunds)." });
+    }
+    const refundAmount = Math.abs(difference);
+
+    // Call Twilio Verify API to send OTP
+    const verification = await twilioClient.verify.v2
+      .services(env.twilio.verifyServiceSid)
+      .verifications.create({
+        to: env.admin.mobile,
+        channel: "sms",
+      });
+
+    // Save status and calculated amount in the database
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        planChangeRefundStatus: "OTP_PENDING",
+        planChangeRefundAmount: refundAmount,
+      }
+    });
+
+    // Derive masked mobile number from env.admin.mobile (e.g. "••••3210")
+    const rawMobile = env.admin.mobile;
+    const maskedMobile = `••••${rawMobile.slice(-4)}`;
+
+    res.json({
+      success: true,
+      maskedMobile,
+      expiresIn: 300,
+      customer: updated
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function verifyRefundOtpAndExecute(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ success: false, message: "OTP code is required" });
+    }
+
+    // Twilio Verification Check
+    const verificationCheck = await twilioClient.verify.v2
+      .services(env.twilio.verifyServiceSid)
+      .verificationChecks.create({
+        to: env.admin.mobile,
+        code,
+      });
+
+    if (verificationCheck.status !== "approved") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid verification code. Please try again."
+      });
+    }
+
+    // Re-fetch customer
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    // Check database state hasn't changed
+    if (customer.planChangeRefundStatus !== "OTP_PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired OTP context."
+      });
+    }
+    if (!customer.planChangeRefundAmount || customer.planChangeRefundAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid refund amount has been calculated."
+      });
+    }
+
+    // Exclusivity: reject if manual refund proof has been uploaded
+    if (customer.planChangeRefundProofUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot refund via Razorpay because a manual refund proof has already been uploaded."
+      });
+    }
+
+    // Set state to REFUND_PROCESSING to lock concurrent updates
+    let updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: { planChangeRefundStatus: "REFUND_PROCESSING" }
+    });
+
+    try {
+      // Execute Razorpay refund
+      const refund = await refundPlanChangeDeposit(customer.id, customer.planChangeRefundAmount);
+
+      // Set state to REFUND_SUCCESS
+      updated = await prisma.customer.update({
+        where: { id: customer.id },
+        data: {
+          planChangeRefundStatus: "REFUND_SUCCESS",
+          planChangeRazorpayRefundId: refund.id
+        }
+      });
+
+      res.json({ success: true, customer: updated, refund });
+    } catch (refundError: any) {
+      // If refund failed, revert to REFUND_FAILED
+      updated = await prisma.customer.update({
+        where: { id: customer.id },
+        data: { planChangeRefundStatus: "REFUND_FAILED" }
+      });
+      res.status(500).json({
+        success: false,
+        message: refundError.error?.description || refundError.message,
+        customer: updated
+      });
+    }
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function cancelRefundOtp(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    if (customer.planChangeRefundStatus === "REFUND_PROCESSING" || customer.planChangeRefundStatus === "REFUND_SUCCESS") {
+      return res.status(400).json({ success: false, message: "Cannot cancel a refund that is processing or succeeded." });
+    }
+
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        planChangeRefundStatus: "NOT_STARTED",
+        planChangeRefundAmount: null
+      }
+    });
+
+    res.json({ success: true, customer: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
   }
 }
 

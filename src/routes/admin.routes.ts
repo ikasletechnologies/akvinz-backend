@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middlewares/requireAdmin";
 import { upload } from "../middlewares/upload.middleware";
-import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, uploadCustomerDocuments, deleteCustomerDocument, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts, refundNow, refundPlanChangeViaRazorpay } from "../controllers/admin.controller";
+import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, uploadCustomerDocuments, deleteCustomerDocument, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts, refundNow, refundPlanChangeViaRazorpay, requestRefundOtp, verifyRefundOtpAndExecute, cancelRefundOtp } from "../controllers/admin.controller";
 import { downloadInvoicePdf, listCustomerInvoices } from "../controllers/invoice.controller";
 import { listReturnEvents, createReturnEvent } from "../controllers/returnProcess.controller";
 
@@ -55,6 +55,9 @@ router.get("/admin/customers/:id/payouts", requireAdmin, listCustomerPayouts);
 router.post("/admin/customers/:id/refund-now", requireAdmin, refundNow);
 router.post("/admin/customers/:id/change-plan", requireAdmin, changePlan);
 router.post("/admin/customers/:id/plan-change-refund", requireAdmin, refundPlanChangeViaRazorpay);
+router.post("/admin/customers/:id/plan-change/refund/request-otp", requireAdmin, requestRefundOtp);
+router.post("/admin/customers/:id/plan-change/refund/verify-otp", requireAdmin, verifyRefundOtpAndExecute);
+router.post("/admin/customers/:id/plan-change/refund/cancel", requireAdmin, cancelRefundOtp);
 router.get("/admin/customers/:id/invoices", requireAdmin, listCustomerInvoices);
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin, downloadInvoicePdf);
 router.get("/admin/customers/:id/return-events", requireAdmin, listReturnEvents);

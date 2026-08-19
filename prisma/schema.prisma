@@ -60,6 +60,8 @@ model Customer {
   // are cleared once the plan change is applied.
   planChangeRefundProofUrl String?
   planChangeRazorpayRefundId String?
+  planChangeRefundStatus   String    @default("NOT_STARTED") // NOT_STARTED, OTP_PENDING, REFUND_PROCESSING, REFUND_SUCCESS, REFUND_FAILED
+  planChangeRefundAmount   Int?
 
   // Assigned product details, set manually by admin (not collected from customer)
   modelName          String?
