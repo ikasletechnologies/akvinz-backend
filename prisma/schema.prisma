@@ -244,6 +244,8 @@ model MoneyTransaction {
   recipientFundAccountId      String?
   recipientNameSnapshot       String?
   recipientIdentifierSnapshot String? // Masked bank account or UPI ID
+  payoutDestinationType       String? // BANK_ACCOUNT, VPA — only set for direction=PAY_TO_CUSTOMER; null/BANK_ACCOUNT uses the customer's saved bank details
+  payoutVpa                   String? // UPI ID the admin typed for this payout, only when payoutDestinationType=VPA — not saved to the customer's profile, since it's entered fresh per payout
   idempotencyKey              String    @unique
   otpChallengeId              String?
   otpExpiresAt                DateTime?

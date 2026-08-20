@@ -961,11 +961,19 @@ export async function cancelRefundOtp(req: Request, res: Response): Promise<any>
   }
 }
 
+// A UPI VPA is "<handle>@<psp bank/app name>" — e.g. name@okhdfcbank, 9999999999@ybl.
+const VPA_PATTERN = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
+
 export async function requestPayoutOtp(req: Request, res: Response): Promise<any> {
   try {
     const customerId = req.params.id as string;
     const amountPaise = Number(req.body.amountPaise);
     const { reason } = req.body;
+    // "bank" (default, backward-compatible) pays into the customer's saved
+    // bank details; "upi" pays a UPI ID the admin types in for this payout,
+    // so a payment doesn't have to wait on the customer submitting bank
+    // details first.
+    const payoutMethod = req.body.payoutMethod === "upi" ? "upi" : "bank";
 
     if (!amountPaise || amountPaise <= 0) {
       return res.status(400).json({ success: false, message: "Valid amount in paise is required" });
@@ -979,22 +987,39 @@ export async function requestPayoutOtp(req: Request, res: Response): Promise<any
       return res.status(404).json({ success: false, message: "Customer not found" });
     }
 
-    // Verify recipient details are present
-    const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
-    const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
-    const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
+    let recipientNameSnapshot: string;
+    let recipientIdentifierSnapshot: string;
+    let payoutDestinationType: string;
+    let payoutVpa: string | null = null;
 
-    if (!bankAccountNumber || !bankIfscCode || !bankAccountHolderName) {
-      return res.status(400).json({
-        success: false,
-        message: "Customer bank account details (account number, IFSC, name) must be saved first."
-      });
+    if (payoutMethod === "upi") {
+      const upiId = typeof req.body.upiId === "string" ? req.body.upiId.trim() : "";
+      if (!VPA_PATTERN.test(upiId)) {
+        return res.status(400).json({ success: false, message: "Enter a valid UPI ID (e.g. name@bank)" });
+      }
+      payoutDestinationType = "VPA";
+      payoutVpa = upiId;
+      recipientNameSnapshot = customer.fullName;
+      recipientIdentifierSnapshot = upiId;
+    } else {
+      // Verify recipient details are present
+      const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
+      const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
+      const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
+
+      if (!bankAccountNumber || !bankIfscCode || !bankAccountHolderName) {
+        return res.status(400).json({
+          success: false,
+          message: "Customer bank account details (account number, IFSC, name) must be saved first."
+        });
+      }
+
+      // Mask bank account number for safety snapshot
+      const maskedAccount = `••••${bankAccountNumber.slice(-4)}`;
+      payoutDestinationType = "BANK_ACCOUNT";
+      recipientNameSnapshot = bankAccountHolderName;
+      recipientIdentifierSnapshot = `${customer.bankName || customer.refundBankName || "Bank"} (${maskedAccount})`;
     }
-
-    // Mask bank account number for safety snapshot
-    const maskedAccount = `••••${bankAccountNumber.slice(-4)}`;
-    const recipientNameSnapshot = bankAccountHolderName;
-    const recipientIdentifierSnapshot = `${customer.bankName || customer.refundBankName || "Bank"} (${maskedAccount})`;
 
     // Generate unique idempotency key
     const idempotencyKey = crypto.randomUUID();
@@ -1021,6 +1046,8 @@ export async function requestPayoutOtp(req: Request, res: Response): Promise<any
         status: "OTP_PENDING",
         recipientNameSnapshot,
         recipientIdentifierSnapshot,
+        payoutDestinationType,
+        payoutVpa,
         idempotencyKey,
         otpChallengeId,
         otpExpiresAt,
@@ -1126,8 +1153,30 @@ export async function verifyPayoutOtpAndExecute(req: Request, res: Response): Pr
       });
     }
 
-    // 2. Create fund account if not exists
-    if (!fundAccountId) {
+    // 2. Create fund account if not exists.
+    // UPI payouts always create a fresh fund account for the VPA the admin
+    // typed in for this specific transaction — it isn't cached on the
+    // customer, since (unlike bank details) it isn't a stored profile field
+    // and could be different on the next payout.
+    if (transaction.payoutDestinationType === "VPA" && transaction.payoutVpa) {
+      const faRes = await fetch("https://api.razorpay.com/v1/fund_accounts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Basic ${basicAuth}`
+        },
+        body: JSON.stringify({
+          contact_id: contactId,
+          account_type: "vpa",
+          vpa: { address: transaction.payoutVpa }
+        })
+      });
+      const faData: any = await faRes.json();
+      if (!faRes.ok) {
+        throw new Error(faData.error?.description || "Failed to create RazorpayX Fund Account");
+      }
+      fundAccountId = faData.id;
+    } else if (!fundAccountId) {
       const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
       const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
       const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
@@ -1172,7 +1221,9 @@ export async function verifyPayoutOtpAndExecute(req: Request, res: Response): Pr
         fund_account_id: fundAccountId,
         amount: transaction.amountPaise,
         currency: "INR",
-        mode: "IMPS",
+        // Razorpay requires the payout mode to match the fund account type —
+        // UPI for a vpa fund account, IMPS for a bank_account one.
+        mode: transaction.payoutDestinationType === "VPA" ? "UPI" : "IMPS",
         purpose: "refund",
         narration: transaction.reason.substring(0, 30),
         reference_id: transaction.id
