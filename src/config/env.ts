@@ -26,7 +26,7 @@ export const env = {
     keyId: required("RAZORPAY_KEY_ID"),
     keySecret: required("RAZORPAY_KEY_SECRET"),
     webhookSecret: required("RAZORPAY_WEBHOOK_SECRET"),
-    webhookSecretX: required("RAZORPAYX_WEBHOOK_SECRET"),
+    webhookSecretX: required("RAZORPAY_WEBHOOK_SECRET"),
     accountNumberX: required("RAZORPAYX_ACCOUNT_NUMBER"),
   },
   admin: {
