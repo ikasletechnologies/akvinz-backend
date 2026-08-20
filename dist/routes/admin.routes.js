@@ -6,6 +6,7 @@ const upload_middleware_1 = require("../middlewares/upload.middleware");
 const admin_controller_1 = require("../controllers/admin.controller");
 const invoice_controller_1 = require("../controllers/invoice.controller");
 const returnProcess_controller_1 = require("../controllers/returnProcess.controller");
+const locationChange_controller_1 = require("../controllers/locationChange.controller");
 const router = (0, express_1.Router)();
 router.post("/admin/login", admin_controller_1.login);
 router.get("/admin/stats", requireAdmin_1.requireAdmin, admin_controller_1.getStats);
@@ -51,5 +52,7 @@ router.get("/admin/customers/:id/invoices", requireAdmin_1.requireAdmin, invoice
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin_1.requireAdmin, invoice_controller_1.downloadInvoicePdf);
 router.get("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, returnProcess_controller_1.listReturnEvents);
 router.post("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, upload_middleware_1.upload.fields([{ name: "defectImages", maxCount: 3 }]), returnProcess_controller_1.createReturnEvent);
+router.get("/admin/location-change-requests", requireAdmin_1.requireAdmin, locationChange_controller_1.listLocationChangeRequests);
+router.post("/admin/location-change-requests/:id/review", requireAdmin_1.requireAdmin, locationChange_controller_1.reviewLocationChangeRequest);
 exports.default = router;
 //# sourceMappingURL=admin.routes.js.map

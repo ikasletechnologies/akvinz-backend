@@ -4,6 +4,7 @@ import { upload } from "../middlewares/upload.middleware";
 import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, uploadCustomerDocuments, deleteCustomerDocument, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts, refundNow, refundPlanChangeViaRazorpay, requestRefundOtp, verifyRefundOtpAndExecute, cancelRefundOtp, requestPayoutOtp, verifyPayoutOtpAndExecute, cancelPayout, getCustomerMoneyTransactions } from "../controllers/admin.controller";
 import { downloadInvoicePdf, listCustomerInvoices } from "../controllers/invoice.controller";
 import { listReturnEvents, createReturnEvent } from "../controllers/returnProcess.controller";
+import { listLocationChangeRequests, reviewLocationChangeRequest } from "../controllers/locationChange.controller";
 
 const router = Router();
 
@@ -71,5 +72,7 @@ router.post(
   upload.fields([{ name: "defectImages", maxCount: 3 }]),
   createReturnEvent
 );
+router.get("/admin/location-change-requests", requireAdmin, listLocationChangeRequests);
+router.post("/admin/location-change-requests/:id/review", requireAdmin, reviewLocationChangeRequest);
 
 export default router;

@@ -17,6 +17,7 @@ model Customer {
   addressLine1      String
   addressLine2      String?
   city              String
+  district          String?
   state             String
   pincode           String
   
@@ -95,6 +96,7 @@ model Customer {
   paymentLinks      PaymentLinkRequest[]
   payouts           CustomerPayout[]
   moneyTransactions MoneyTransaction[]
+  locationChanges   LocationChangeRequest[]
 
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -265,4 +267,40 @@ model RazorpayWebhookEvent {
   payoutId    String?
   receivedAt  DateTime @default(now())
   processedAt DateTime @default(now())
+}
+
+model LocationChangeRequest {
+  id                   String   @id @default(cuid())
+  customerId           String
+  customer             Customer @relation(fields: [customerId], references: [id])
+  
+  // Old Address details (for history/reference)
+  oldFullAddress       String
+  oldCity              String
+  oldDistrict          String?
+  oldState             String
+  oldPincode           String
+  oldResidenceStatus   String   // "permanent" or "rent"
+  
+  // New Address details
+  newFullAddress       String
+  newCity              String
+  newDistrict          String
+  newState             String
+  newPincode           String
+  newResidenceStatus   String   // "permanent" or "rent"
+  
+  // Proof
+  proofType            String
+  proofDocUrl          String
+  
+  // Reason
+  reason               String
+  
+  status               String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([customerId, status])
 }
