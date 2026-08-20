@@ -90,6 +90,12 @@ model Customer {
   razorpayXContactId     String?
   razorpayXFundAccountId String?
 
+  // Captured opportunistically if the customer happened to pay their
+  // security deposit via UPI — pre-fills the "Pay Customer" UPI option so
+  // the admin doesn't have to ask for it again, but it's never guaranteed:
+  // customers who paid by card/netbanking/wallet will have this unset.
+  customerUpiVpa String?
+
   invoices            Invoice[]
   returnProcessEvents ReturnProcessEvent[]
   paymentLinks        PaymentLinkRequest[]

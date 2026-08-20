@@ -1,4 +1,5 @@
 import { prisma } from "../config/prisma";
+import { razorpay } from "../config/razorpay";
 import { createInvoice, securityDepositAmount } from "./invoice.service";
 
 type FinalizeRegistrationResult =
@@ -54,6 +55,19 @@ export async function finalizeRegistration(
     return { status: "email_conflict" };
   }
 
+  // Opportunistic — only present when the customer paid via UPI, and this
+  // must never block registration if Razorpay's API hiccups (the payment
+  // itself was already verified by the caller's signature check).
+  let customerUpiVpa: string | undefined;
+  try {
+    const payment = await razorpay.payments.fetch(razorpayPaymentId);
+    if (payment.method === "upi" && typeof (payment as any).vpa === "string") {
+      customerUpiVpa = (payment as any).vpa;
+    }
+  } catch {
+    // Not fatal — the admin can still type the UPI ID in manually later.
+  }
+
   const customer = await prisma.customer.create({
     data: {
       fullName: draft.fullName,
@@ -73,7 +87,8 @@ export async function finalizeRegistration(
       residenceDocUrl: draft.residenceDocUrl,
       paymentStatus: "COMPLETED",
       razorpayOrderId,
-      razorpayPaymentId
+      razorpayPaymentId,
+      customerUpiVpa
     }
   });
 
