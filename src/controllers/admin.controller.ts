@@ -388,6 +388,42 @@ export async function getCustomer(req: Request, res: Response): Promise<any> {
   }
 }
 
+// Looks up a customer's UPI VPA from their original security-deposit
+// payment on demand, for customers who registered before customerUpiVpa
+// started being captured automatically (registration.service.ts) — every
+// customer already has razorpayPaymentId on file regardless of when they
+// registered, so this works retroactively. Only returns something if that
+// original payment was actually made via UPI; caches a hit back onto the
+// customer so future lookups (and other admins) skip the Razorpay call.
+export async function getCustomerUpiVpa(req: Request, res: Response): Promise<any> {
+  try {
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+    if (customer.customerUpiVpa) {
+      return res.json({ success: true, upiVpa: customer.customerUpiVpa });
+    }
+    if (!customer.razorpayPaymentId) {
+      return res.json({ success: true, upiVpa: null });
+    }
+
+    try {
+      const payment = await razorpay.payments.fetch(customer.razorpayPaymentId);
+      const upiVpa = payment.method === "upi" && typeof (payment as any).vpa === "string" ? (payment as any).vpa : null;
+      if (upiVpa) {
+        await prisma.customer.update({ where: { id: customer.id }, data: { customerUpiVpa: upiVpa } });
+      }
+      res.json({ success: true, upiVpa });
+    } catch {
+      // Old/archived payment, API hiccup, etc. — not fatal, admin can still type it in.
+      res.json({ success: true, upiVpa: null });
+    }
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
 export async function updateCustomer(req: Request, res: Response): Promise<any> {
   try {
     const allowedFields = [
