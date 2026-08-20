@@ -126,6 +126,29 @@ export async function razorpayWebhook(req: Request, res: Response): Promise<any>
     }
   }
 
+  // The customer (or their bank/UPI app) paused the mandate without
+  // cancelling it outright — Razorpay keeps the subscription alive and will
+  // send "subscription.resumed" if it's turned back on.
+  if (payload.event === "subscription.paused") {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (subEntity?.id) {
+      await prisma.customer.updateMany({
+        where: { razorpaySubscriptionId: subEntity.id },
+        data: { autopayStatus: "PAUSED" }
+      });
+    }
+  }
+
+  if (payload.event === "subscription.resumed") {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (subEntity?.id) {
+      await prisma.customer.updateMany({
+        where: { razorpaySubscriptionId: subEntity.id },
+        data: { autopayStatus: "ACTIVE" }
+      });
+    }
+  }
+
   if (payload.event === "subscription.cancelled" || payload.event === "subscription.completed") {
     const subEntity = payload.payload?.subscription?.entity;
     if (subEntity?.id) {

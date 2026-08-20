@@ -1,6 +1,5 @@
 generator client {
   provider = "prisma-client-js"
-
 }
 
 datasource db {
@@ -8,49 +7,49 @@ datasource db {
 }
 
 model Customer {
-  id                String   @id @default(cuid())
-  fullName          String
-  mobileNumber      String   @unique
-  email             String   @unique
-  
+  id           String @id @default(cuid())
+  fullName     String
+  mobileNumber String @unique
+  email        String @unique
+
   // Address details
-  addressLine1      String
-  addressLine2      String?
-  city              String
-  district          String?
-  state             String
-  pincode           String
-  
-  planDuration      Int      // 12 or 24
-  houseType         String   // "permanent" or "rent"
-  
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  district     String?
+  state        String
+  pincode      String
+
+  planDuration Int // 12 or 24
+  houseType    String // "permanent" or "rent"
+
   // Document references (S3 URLs, file paths, etc.)
   aadharFrontImageUrl String?
   aadharBackImageUrl  String?
   panFrontImageUrl    String?
   panBackImageUrl     String?
-  residenceDocUrl   String?  // EB Bill or Rental Agreement
-  
+  residenceDocUrl     String? // EB Bill or Rental Agreement
+
   // Payment info
-  paymentStatus     String   @default("PENDING") // PENDING, COMPLETED, FAILED
+  paymentStatus     String  @default("PENDING") // PENDING, COMPLETED, FAILED
   razorpayOrderId   String?
   razorpayPaymentId String?
 
   // Rental Subscription info
-  rentalPlanDuration Int?     // 12 or 24
-  rentalAmount       Int?     // 699 or 449
-  subscriptionStatus String   @default("INACTIVE") // INACTIVE, ACTIVE, CANCELLED
+  rentalPlanDuration Int? // 12 or 24
+  rentalAmount       Int? // 699 or 449
+  subscriptionStatus String    @default("INACTIVE") // INACTIVE, ACTIVE, CANCELLED
   subscriptionStart  DateTime?
   subscriptionEnd    DateTime?
   lastPaymentDate    DateTime?
-  billingDay         Int?      // day-of-month billing anchor (from subscriptionStart), used to compute every renewal so drift doesn't accumulate month over month
+  billingDay         Int? // day-of-month billing anchor (from subscriptionStart), used to compute every renewal so drift doesn't accumulate month over month
 
   // Rental autopay (UPI Autopay / e-mandate via Razorpay Subscriptions).
   // Once ACTIVE, Razorpay itself drives the billing cycle for this customer —
   // see processRenewals, which skips anyone with a razorpaySubscriptionId.
   razorpaySubscriptionId String? @unique
   razorpayPlanId         String?
-  autopayStatus          String?  @default("NOT_SET") // NOT_SET, PENDING_AUTH, ACTIVE, FAILED, CANCELLED
+  autopayStatus          String? @default("NOT_SET") // NOT_SET, PENDING_AUTH, ACTIVE, PAUSED, FAILED, CANCELLED
 
   // Proof that a plan-downgrade deposit refund was actually sent to the
   // customer — either one satisfies "Confirm & Apply Plan Change" for a
@@ -59,26 +58,26 @@ model Customer {
   // instead used the "Refund via Razorpay" button, which issues a real
   // Razorpay refund against the customer's original deposit payment. Both
   // are cleared once the plan change is applied.
-  planChangeRefundProofUrl String?
+  planChangeRefundProofUrl   String?
   planChangeRazorpayRefundId String?
-  planChangeRefundStatus   String    @default("NOT_STARTED") // NOT_STARTED, OTP_PENDING, REFUND_PROCESSING, REFUND_SUCCESS, REFUND_FAILED
-  planChangeRefundAmount   Int?
+  planChangeRefundStatus     String  @default("NOT_STARTED") // NOT_STARTED, OTP_PENDING, REFUND_PROCESSING, REFUND_SUCCESS, REFUND_FAILED
+  planChangeRefundAmount     Int?
 
   // Assigned product details, set manually by admin (not collected from customer)
-  modelName          String?
+  modelName           String?
   machineSerialNumber String?
 
   // Product return info (separate from subscription cancellation)
-  returnRequested    Boolean   @default(false)
-  returnRequestedAt  DateTime?
-  refundAmount       Int?      // Final refund decided by admin after inspecting the returned product
+  returnRequested   Boolean   @default(false)
+  returnRequestedAt DateTime?
+  refundAmount      Int? // Final refund decided by admin after inspecting the returned product
 
   // Bank details the customer provides at return-request time, so the admin
   // has where to send the refund once refundAmount is fixed.
   refundBankAccountHolderName String?
-  refundBankName               String?
-  refundBankIfscCode           String?
-  refundBankAccountNumber      String?
+  refundBankName              String?
+  refundBankIfscCode          String?
+  refundBankAccountNumber     String?
 
   // General-purpose bank account details the customer can submit any time
   // (via bankDetailsForm), independent of a return/refund — e.g. so the
@@ -91,36 +90,36 @@ model Customer {
   razorpayXContactId     String?
   razorpayXFundAccountId String?
 
-  invoices          Invoice[]
+  invoices            Invoice[]
   returnProcessEvents ReturnProcessEvent[]
-  paymentLinks      PaymentLinkRequest[]
-  payouts           CustomerPayout[]
-  moneyTransactions MoneyTransaction[]
-  locationChanges   LocationChangeRequest[]
+  paymentLinks        PaymentLinkRequest[]
+  payouts             CustomerPayout[]
+  moneyTransactions   MoneyTransaction[]
+  locationChanges     LocationChangeRequest[]
 
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // One row per billed/refunded transaction, so each gets its own permanent
 // bill number and a re-downloadable PDF receipt (Customer only tracks the
 // latest payment, not history).
 model Invoice {
-  id            String   @id @default(cuid())
-  billNumber    String   @unique
-  type          String   // SECURITY_DEPOSIT, RENTAL, REFUND
-  customerId    String
-  customer      Customer @relation(fields: [customerId], references: [id])
+  id         String   @id @default(cuid())
+  billNumber String   @unique
+  type       String // SECURITY_DEPOSIT, RENTAL, REFUND
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
 
-  productType   String   // display label, e.g. "Refundable Security Deposit"
-  amount        Int      // INR
-  paymentMethod String   // "Razorpay" or "Manual"
-  transactionId String?  // razorpayPaymentId, null for manual refunds
-  status        String   // FUNDED, REFUNDED
-  reason        String?  // shown as "No reason available." when null
+  productType   String // display label, e.g. "Refundable Security Deposit"
+  amount        Int // INR
+  paymentMethod String // "Razorpay" or "Manual"
+  transactionId String? // razorpayPaymentId, null for manual refunds
+  status        String // FUNDED, REFUNDED
+  reason        String? // shown as "No reason available." when null
 
-  documentDate  DateTime @default(now())
-  createdAt     DateTime @default(now())
+  documentDate DateTime @default(now())
+  createdAt    DateTime @default(now())
 }
 
 // One row per admin update to a return-process step — an append-only log
@@ -132,27 +131,28 @@ model ReturnProcessEvent {
   customerId String
   customer   Customer @relation(fields: [customerId], references: [id])
 
-  step       String   // DEINITIALIZATION_INITIATED, DEFECT_REPORTED, MACHINE_COLLECTED, MACHINE_RECEIVED_WAREHOUSE, REFUND_INITIATED, PAYMENT_REFUNDED
-  status     String   // PENDING/COMPLETED for most steps, YES/NO for DEFECT_REPORTED
-  eventDate  DateTime // business date the admin attributes this update to
-  remarks    String?  // required when step=DEFECT_REPORTED and status=YES
+  step            String // DEINITIALIZATION_INITIATED, DEFECT_REPORTED, MACHINE_COLLECTED, MACHINE_RECEIVED_WAREHOUSE, REFUND_INITIATED, PAYMENT_REFUNDED
+  status          String // PENDING/COMPLETED for most steps, YES/NO for DEFECT_REPORTED
+  eventDate       DateTime // business date the admin attributes this update to
+  remarks         String? // required when step=DEFECT_REPORTED and status=YES
   defectImageUrls String[] // up to 3 photos, only used when step=DEFECT_REPORTED and status=YES
 
-  createdAt  DateTime @default(now()) // when this log entry was actually recorded
+  createdAt DateTime @default(now()) // when this log entry was actually recorded
 }
 
 // One row per ad-hoc Razorpay payment link an admin generates for a customer
 // (e.g. to collect a fixed amount like ₹499), so the amounts requested over
 // time stay visible even after the link itself expires.
 model PaymentLinkRequest {
-  id            String   @id @default(cuid())
-  customerId    String
-  customer      Customer @relation(fields: [customerId], references: [id])
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
 
-  amount        Int      // INR
-  razorpayPaymentLinkId String? @unique // e.g. "plink_xxx", used to match incoming webhook events back to this row; nullable only for rows created before this field existed
-  shortUrl      String
-  expireBy      DateTime
+  amount                Int // INR
+  reason                String? // why this collection was requested, e.g. "Pending Due", "Late Fee" — nullable only for rows created before this field existed
+  razorpayPaymentLinkId String?  @unique // e.g. "plink_xxx", used to match incoming webhook events back to this row; nullable only for rows created before this field existed
+  shortUrl              String
+  expireBy              DateTime
 
   status            String    @default("CREATED") // CREATED, PAID, EXPIRED, CANCELLED — flipped to PAID by the Razorpay webhook
   razorpayPaymentId String?
@@ -165,7 +165,7 @@ model PaymentLinkRequest {
   // "Confirm & Apply Plan Change" click.
   planChangeTargetDuration Int?
 
-  createdAt     DateTime @default(now())
+  createdAt DateTime @default(now())
 }
 
 // A manual, immediate payment the company makes TO a customer (e.g. a
@@ -175,18 +175,18 @@ model PaymentLinkRequest {
 // (the Customer -> Admin direction) to form the customer's unified
 // "Transaction History" of ad-hoc money movement.
 model CustomerPayout {
-  id          String   @id @default(cuid())
-  customerId  String
-  customer    Customer @relation(fields: [customerId], references: [id])
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
 
-  amount      Int      // INR
-  reason      String
+  amount   Int // INR
+  reason   String
   // Screenshot/receipt proving the payment was actually sent. Nullable at
   // the DB level only because payouts recorded before this field existed
   // have none — createPayout still requires it for every new payout.
-  proofUrl    String?
+  proofUrl String?
 
-  createdAt   DateTime @default(now())
+  createdAt DateTime @default(now())
 }
 
 // Atomic per-type-per-year sequence used to generate bill numbers like
@@ -203,18 +203,18 @@ model BillCounter {
 // so a cancelled/failed/abandoned payment leaves a followable Draft instead
 // of a half-registered Customer.
 model CustomerDraft {
-  id                String   @id
-  fullName          String?
-  mobileNumber      String?  @unique
-  email             String?
-  addressLine1      String?
-  addressLine2      String?
-  city              String?
-  state             String?
-  pincode           String?
-  planDuration      Int?
-  houseType         String?
-  residenceDocType  String?
+  id               String  @id
+  fullName         String?
+  mobileNumber     String? @unique
+  email            String?
+  addressLine1     String?
+  addressLine2     String?
+  city             String?
+  state            String?
+  pincode          String?
+  planDuration     Int?
+  houseType        String?
+  residenceDocType String?
 
   aadharFrontImageUrl String?
   aadharBackImageUrl  String?
@@ -222,38 +222,38 @@ model CustomerDraft {
   panBackImageUrl     String?
   residenceDocUrl     String?
 
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model MoneyTransaction {
-  id                     String    @id @default(cuid())
-  customerId             String
-  customer               Customer  @relation(fields: [customerId], references: [id])
-  direction              String    // PAY_TO_CUSTOMER, COLLECT_FROM_CUSTOMER
-  amountPaise            Int       // in paise
-  currency               String    @default("INR")
-  reason                 String    // Deposit Refund, Overpayment Refund, etc.
-  method                 String    // RAZORPAY_PAYOUT, MANUAL
-  status                 String    @default("DRAFT") // DRAFT, OTP_PENDING, PROCESSING, QUEUED, PENDING, SUCCESS, FAILED, REVERSED, CANCELLED, REJECTED
-  razorpayPayoutId       String?   @unique
-  razorpayPayoutStatus   String?
-  razorpayStatusReason   String?
-  razorpayStatusDescription String?
-  razorpayUtr            String?
-  recipientFundAccountId String?
-  recipientNameSnapshot  String?
+  id                          String    @id @default(cuid())
+  customerId                  String
+  customer                    Customer  @relation(fields: [customerId], references: [id])
+  direction                   String // PAY_TO_CUSTOMER, COLLECT_FROM_CUSTOMER
+  amountPaise                 Int // in paise
+  currency                    String    @default("INR")
+  reason                      String // Deposit Refund, Overpayment Refund, etc.
+  method                      String // RAZORPAY_PAYOUT, MANUAL
+  status                      String    @default("DRAFT") // DRAFT, OTP_PENDING, PROCESSING, QUEUED, PENDING, SUCCESS, FAILED, REVERSED, CANCELLED, REJECTED
+  razorpayPayoutId            String?   @unique
+  razorpayPayoutStatus        String?
+  razorpayStatusReason        String?
+  razorpayStatusDescription   String?
+  razorpayUtr                 String?
+  recipientFundAccountId      String?
+  recipientNameSnapshot       String?
   recipientIdentifierSnapshot String? // Masked bank account or UPI ID
-  idempotencyKey         String    @unique
-  otpChallengeId         String?
-  otpExpiresAt           DateTime?
-  otpAttempts            Int       @default(0)
-  sourceType             String?   // e.g., PLAN_CHANGE_REFUND
-  sourceId               String?   // references original source entity
-  proofUrl               String?   // For manual collections
-  createdBy              String?   // Admin email/ID
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  idempotencyKey              String    @unique
+  otpChallengeId              String?
+  otpExpiresAt                DateTime?
+  otpAttempts                 Int       @default(0)
+  sourceType                  String? // e.g., PLAN_CHANGE_REFUND
+  sourceId                    String? // references original source entity
+  proofUrl                    String? // For manual collections
+  createdBy                   String? // Admin email/ID
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
 
   @@index([customerId, createdAt])
   @@index([status])
@@ -270,37 +270,37 @@ model RazorpayWebhookEvent {
 }
 
 model LocationChangeRequest {
-  id                   String   @id @default(cuid())
-  customerId           String
-  customer             Customer @relation(fields: [customerId], references: [id])
-  
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
   // Old Address details (for history/reference)
-  oldFullAddress       String
-  oldCity              String
-  oldDistrict          String?
-  oldState             String
-  oldPincode           String
-  oldResidenceStatus   String   // "permanent" or "rent"
-  
+  oldFullAddress     String
+  oldCity            String
+  oldDistrict        String?
+  oldState           String
+  oldPincode         String
+  oldResidenceStatus String // "permanent" or "rent"
+
   // New Address details
-  newFullAddress       String
-  newCity              String
-  newDistrict          String
-  newState             String
-  newPincode           String
-  newResidenceStatus   String   // "permanent" or "rent"
-  
+  newFullAddress     String
+  newCity            String
+  newDistrict        String
+  newState           String
+  newPincode         String
+  newResidenceStatus String // "permanent" or "rent"
+
   // Proof
-  proofType            String
-  proofDocUrl          String
-  
+  proofType   String
+  proofDocUrl String
+
   // Reason
-  reason               String
-  
-  status               String   @default("PENDING") // PENDING, APPROVED, REJECTED
-  
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  reason String
+
+  status String @default("PENDING") // PENDING, APPROVED, REJECTED
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([customerId, status])
 }

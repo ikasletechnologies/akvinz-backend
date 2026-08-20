@@ -466,6 +466,17 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
     const planChangeTargetDuration = Number(req.body.planChangeTargetDuration);
     const hasPlanChangeTarget = planChangeTargetDuration === 12 || planChangeTargetDuration === 24;
 
+    // The plan-change top-up link is self-explanatory and generated
+    // programmatically, so it gets a fixed reason instead of asking the
+    // admin to type one; every other "Collect From Customer" link requires
+    // an explicit reason.
+    const reason = hasPlanChangeTarget
+      ? `Plan change top-up (${planChangeTargetDuration} months)`
+      : typeof req.body.reason === "string" ? req.body.reason.trim() : "";
+    if (!reason) {
+      return res.status(400).json({ success: false, message: "A reason is required" });
+    }
+
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
     if (!customer) {
       return res.status(404).json({ success: false, message: "Customer not found" });
@@ -493,6 +504,7 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
       data: {
         customerId: customer.id,
         amount,
+        reason,
         razorpayPaymentLinkId: paymentLink.id,
         shortUrl: paymentLink.short_url,
         expireBy: new Date((paymentLink.expire_by as number) * 1000),
