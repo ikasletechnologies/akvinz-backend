@@ -112,7 +112,7 @@ model Invoice {
   customer   Customer @relation(fields: [customerId], references: [id])
 
   productType   String // display label, e.g. "Refundable Security Deposit"
-  amount        Int // INR
+  amount        Decimal @db.Decimal(10, 2) // INR — supports paise (e.g. 3.50), matching what Razorpay actually charges
   paymentMethod String // "Razorpay" or "Manual"
   transactionId String? // razorpayPaymentId, null for manual refunds
   status        String // FUNDED, REFUNDED
@@ -148,7 +148,7 @@ model PaymentLinkRequest {
   customerId String
   customer   Customer @relation(fields: [customerId], references: [id])
 
-  amount                Int // INR
+  amount                Decimal  @db.Decimal(10, 2) // INR — supports paise (e.g. 3.50), matching what Razorpay actually charges
   reason                String? // why this collection was requested, e.g. "Pending Due", "Late Fee" — nullable only for rows created before this field existed
   razorpayPaymentLinkId String?  @unique // e.g. "plink_xxx", used to match incoming webhook events back to this row; nullable only for rows created before this field existed
   shortUrl              String

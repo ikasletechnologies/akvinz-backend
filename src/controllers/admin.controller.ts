@@ -137,8 +137,8 @@ export async function getStats(req: Request, res: Response): Promise<any> {
         rentalDue,
         returnsInitiated,
         customersRefunded: refundedInvoices.length,
-        rentalRevenue: rentalRevenueAgg._sum.amount || 0,
-        totalDeposits: totalDepositsAgg._sum.amount || 0,
+        rentalRevenue: Number(rentalRevenueAgg._sum.amount) || 0,
+        totalDeposits: Number(totalDepositsAgg._sum.amount) || 0,
         assetsReceived
       }
     });
@@ -524,7 +524,9 @@ export async function listCustomerPaymentLinks(req: Request, res: Response): Pro
       where: { customerId: req.params.id as string },
       orderBy: { createdAt: "desc" }
     });
-    res.json({ success: true, paymentLinks });
+    // amount is a Prisma Decimal — JSON.stringify would otherwise serialize
+    // it as a string (e.g. "3.50") instead of a number.
+    res.json({ success: true, paymentLinks: paymentLinks.map((p) => ({ ...p, amount: Number(p.amount) })) });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }

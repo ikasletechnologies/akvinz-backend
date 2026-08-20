@@ -40,7 +40,9 @@ export async function listCustomerInvoices(req: Request<{ id: string }>, res: Re
       where: { customerId: req.params.id },
       orderBy: { createdAt: "desc" }
     });
-    res.json({ success: true, invoices });
+    // amount is a Prisma Decimal — JSON.stringify would otherwise serialize
+    // it as a string (e.g. "3.50") instead of a number.
+    res.json({ success: true, invoices: invoices.map((inv) => ({ ...inv, amount: Number(inv.amount) })) });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
