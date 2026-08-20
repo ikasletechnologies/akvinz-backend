@@ -1045,6 +1045,10 @@ export async function verifyPayoutOtpAndExecute(req: Request, res: Response): Pr
       return res.status(404).json({ success: false, message: "Transaction not found" });
     }
 
+    if (!env.razorpay.accountNumberX) {
+      return res.status(503).json({ success: false, message: "RazorpayX payouts are not configured on this server" });
+    }
+
     if (transaction.status !== "OTP_PENDING") {
       return res.status(400).json({ success: false, message: "Transaction is not in OTP_PENDING status" });
     }
