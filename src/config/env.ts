@@ -37,8 +37,13 @@ export const env = {
   razorpay: {
     keyId: required("RAZORPAY_KEY_ID"),
     keySecret: required("RAZORPAY_KEY_SECRET"),
+    // Normal Razorpay Payment/Refund webhook
     webhookSecret: required("RAZORPAY_WEBHOOK_SECRET"),
-    webhookSecretX: required("RAZORPAY_WEBHOOK_SECRET"),
+
+    // RazorpayX Payout webhook — separate secret, optional until RazorpayX is activated
+    webhookSecretX: optional("RAZORPAYX_PAYOUT_WEBHOOK_SECRET"),
+
+    // RazorpayX account number — optional until RazorpayX is activated
     accountNumberX: optional("RAZORPAYX_ACCOUNT_NUMBER"),
   },
   admin: {

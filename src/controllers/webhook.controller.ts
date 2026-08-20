@@ -140,6 +140,10 @@ export async function razorpayWebhook(req: Request, res: Response): Promise<any>
 }
 
 export async function razorpayxWebhook(req: Request, res: Response): Promise<any> {
+  if (!env.razorpay.webhookSecretX) {
+    return res.status(503).json({ success: false, message: "RazorpayX payouts are not configured on this server" });
+  }
+
   const signature = req.headers["x-razorpay-signature"] as string | undefined;
   const rawBody = req.body as Buffer;
 
