@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middlewares/requireAdmin";
 import { upload } from "../middlewares/upload.middleware";
-import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, uploadCustomerDocuments, deleteCustomerDocument, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts } from "../controllers/admin.controller";
+import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, uploadCustomerDocuments, deleteCustomerDocument, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, activateAutopay, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts } from "../controllers/admin.controller";
 import { downloadInvoicePdf, listCustomerInvoices } from "../controllers/invoice.controller";
 import { listReturnEvents, createReturnEvent } from "../controllers/returnProcess.controller";
 
@@ -43,6 +43,7 @@ router.get("/admin/drafts", requireAdmin, listDrafts);
 router.delete("/admin/drafts/:id", requireAdmin, deleteDraft);
 router.post("/admin/process-renewals", requireAdmin, triggerRenewals);
 router.post("/admin/customers/:id/payment-link", requireAdmin, createPaymentLink);
+router.post("/admin/customers/:id/activate-autopay", requireAdmin, activateAutopay);
 router.get("/admin/customers/:id/payment-links", requireAdmin, listCustomerPaymentLinks);
 router.post("/admin/payment-links/:linkId/mark-paid", requireAdmin, markPaymentLinkAsPaid);
 router.post(

@@ -8,6 +8,7 @@ import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
 import { createInvoice } from "../services/invoice.service";
 import { securityDepositAmount } from "../utils/planPricing";
+import { createAutopaySubscription } from "../services/autopay.service";
 import { buildFileUrl } from "../utils/fileUrl";
 
 export function login(req: Request, res: Response): any {
@@ -485,6 +486,30 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
     });
 
     res.json({ success: true, shortUrl: paymentLink.short_url, expireBy: paymentLink.expire_by });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.error?.description || error.message });
+  }
+}
+
+// Admin-triggered: creates a fresh Razorpay Subscription (never a
+// reactivation of an old cancelled one — Razorpay doesn't support that) and
+// hands back its short_url, the same way createPaymentLink above hands back
+// a shareable link for a one-time payment. Autopay only flips to ACTIVE once
+// the customer opens that link, authorizes it themselves, and Razorpay
+// confirms via webhook (see webhook.controller.ts) — this call just starts
+// that process, it does not activate anything itself.
+export async function activateAutopay(req: Request, res: Response): Promise<any> {
+  try {
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+    if (!customer.rentalPlanDuration || !customer.rentalAmount) {
+      return res.status(400).json({ success: false, message: "This customer has no established rental plan/amount yet — activate their rental first." });
+    }
+
+    const subscription = await createAutopaySubscription(customer.id, customer.rentalPlanDuration, customer.rentalAmount);
+    res.json({ success: true, shortUrl: subscription.short_url });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.error?.description || error.message });
   }

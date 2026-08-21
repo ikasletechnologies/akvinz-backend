@@ -49,7 +49,10 @@ model Customer {
   // see processRenewals, which skips anyone with a razorpaySubscriptionId.
   razorpaySubscriptionId String? @unique
   razorpayPlanId         String?
-  autopayStatus          String?  @default("NOT_SET") // NOT_SET, PENDING_AUTH, ACTIVE, FAILED, CANCELLED
+  // NOT_SET: never had autopay. CANCELLED: had it, explicitly turned off
+  // (e.g. via a return) — independent of subscriptionStatus, which may go
+  // back to ACTIVE later while autopay stays CANCELLED until re-activated.
+  autopayStatus          String?  @default("NOT_SET") // NOT_SET, PENDING, ACTIVE, FAILED, CANCELLED
 
   // Proof (screenshot/receipt) that a plan-downgrade deposit refund was
   // actually sent to the customer. Required before the admin can confirm a
