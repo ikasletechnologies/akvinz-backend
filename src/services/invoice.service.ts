@@ -18,6 +18,9 @@ interface CreateInvoiceInput {
   // covers a period starting from the payment date, not the original due date.
   rentStartDate?: Date | null;
   rentEndDate?: Date | null;
+  // Manual payment proof photo (e.g. bank transfer screenshot) — embedded
+  // into the receipt PDF when present.
+  proofUrl?: string | null;
 }
 
 export async function createInvoice(input: CreateInvoiceInput) {
@@ -35,7 +38,8 @@ export async function createInvoice(input: CreateInvoiceInput) {
         status: input.status,
         reason: input.reason ?? null,
         rentStartDate: input.rentStartDate ?? null,
-        rentEndDate: input.rentEndDate ?? null
+        rentEndDate: input.rentEndDate ?? null,
+        proofUrl: input.proofUrl ?? null
       }
     });
   });

@@ -625,7 +625,8 @@ export async function createPayout(req: Request, res: Response): Promise<any> {
       amount,
       paymentMethod: "Manual",
       status: "REFUNDED",
-      reason
+      reason,
+      proofUrl
     });
 
     res.json({ success: true, payout, invoice });

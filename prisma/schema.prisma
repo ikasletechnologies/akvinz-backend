@@ -143,6 +143,7 @@ model Invoice {
   transactionId String? // razorpayPaymentId, null for manual refunds
   status        String // FUNDED, REFUNDED
   reason        String? // shown as "No reason available." when null
+  proofUrl      String? // manual payment proof photo (e.g. bank transfer screenshot) — embedded into the receipt PDF when present
 
   // The rental cycle this bill covers — only set for type=RENTAL, distinct
   // from documentDate/paymentDate (when the payment was actually made). A
