@@ -19,7 +19,7 @@ router.post("/admin/customers", requireAdmin_1.requireAdmin, upload_middleware_1
     { name: "residenceFile", maxCount: 1 }
 ]), admin_controller_1.createCustomer);
 router.get("/admin/customers/:id", requireAdmin_1.requireAdmin, admin_controller_1.getCustomer);
-router.get("/admin/customers/:id/upi-vpa", requireAdmin_1.requireAdmin, getCustomerUpiVpa);
+router.get("/admin/customers/:id/upi-vpa", requireAdmin_1.requireAdmin, admin_controller_1.getCustomerUpiVpa);
 router.patch("/admin/customers/:id", requireAdmin_1.requireAdmin, admin_controller_1.updateCustomer);
 router.delete("/admin/customers/:id", requireAdmin_1.requireAdmin, admin_controller_1.deleteCustomer);
 router.post("/admin/customers/:id/documents", requireAdmin_1.requireAdmin, upload_middleware_1.upload.fields([
@@ -40,16 +40,16 @@ router.get("/admin/customers/:id/payment-links", requireAdmin_1.requireAdmin, ad
 router.post("/admin/payment-links/:linkId/mark-paid", requireAdmin_1.requireAdmin, admin_controller_1.markPaymentLinkAsPaid);
 router.post("/admin/customers/:id/payout", requireAdmin_1.requireAdmin, upload_middleware_1.upload.fields([{ name: "proofFile", maxCount: 1 }]), admin_controller_1.createPayout);
 router.get("/admin/customers/:id/payouts", requireAdmin_1.requireAdmin, admin_controller_1.listCustomerPayouts);
-router.post("/admin/customers/:id/refund-now", requireAdmin_1.requireAdmin, refundNow);
+router.post("/admin/customers/:id/refund-now", requireAdmin_1.requireAdmin, admin_controller_1.refundNow);
 router.post("/admin/customers/:id/change-plan", requireAdmin_1.requireAdmin, admin_controller_1.changePlan);
-router.post("/admin/customers/:id/plan-change-refund", requireAdmin_1.requireAdmin, refundPlanChangeViaRazorpay);
-router.post("/admin/customers/:id/plan-change/refund/request-otp", requireAdmin_1.requireAdmin, requestRefundOtp);
-router.post("/admin/customers/:id/plan-change/refund/verify-otp", requireAdmin_1.requireAdmin, verifyRefundOtpAndExecute);
-router.post("/admin/customers/:id/plan-change/refund/cancel", requireAdmin_1.requireAdmin, cancelRefundOtp);
-router.post("/admin/customers/:id/money-transactions/payout/request-otp", requireAdmin_1.requireAdmin, requestPayoutOtp);
-router.post("/admin/money-transactions/payout/verify-otp", requireAdmin_1.requireAdmin, verifyPayoutOtpAndExecute);
-router.post("/admin/money-transactions/payout/cancel", requireAdmin_1.requireAdmin, cancelPayout);
-router.get("/admin/customers/:id/money-transactions", requireAdmin_1.requireAdmin, getCustomerMoneyTransactions);
+router.post("/admin/customers/:id/plan-change-refund", requireAdmin_1.requireAdmin, admin_controller_1.refundPlanChangeViaRazorpay);
+router.post("/admin/customers/:id/plan-change/refund/request-otp", requireAdmin_1.requireAdmin, admin_controller_1.requestRefundOtp);
+router.post("/admin/customers/:id/plan-change/refund/verify-otp", requireAdmin_1.requireAdmin, admin_controller_1.verifyRefundOtpAndExecute);
+router.post("/admin/customers/:id/plan-change/refund/cancel", requireAdmin_1.requireAdmin, admin_controller_1.cancelRefundOtp);
+router.post("/admin/customers/:id/money-transactions/payout/request-otp", requireAdmin_1.requireAdmin, admin_controller_1.requestPayoutOtp);
+router.post("/admin/money-transactions/payout/verify-otp", requireAdmin_1.requireAdmin, admin_controller_1.verifyPayoutOtpAndExecute);
+router.post("/admin/money-transactions/payout/cancel", requireAdmin_1.requireAdmin, admin_controller_1.cancelPayout);
+router.get("/admin/customers/:id/money-transactions", requireAdmin_1.requireAdmin, admin_controller_1.getCustomerMoneyTransactions);
 router.get("/admin/customers/:id/invoices", requireAdmin_1.requireAdmin, invoice_controller_1.listCustomerInvoices);
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin_1.requireAdmin, invoice_controller_1.downloadInvoicePdf);
 router.get("/admin/customers/:id/return-events", requireAdmin_1.requireAdmin, returnProcess_controller_1.listReturnEvents);
