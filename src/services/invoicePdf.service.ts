@@ -207,6 +207,30 @@ export async function renderInvoicePdf(invoice: Invoice, customer: Customer): Pr
   // footer below it is always positioned after the real content, never
   // overlapping it regardless of how long the wrapped text runs.
   let ty = Math.max(y + 18, ry) + 16;
+
+  // Manual-payment proof photo (bank transfer screenshot, etc.) — only
+  // present for manually-recorded payments (createPayout). Sized via sharp's
+  // metadata first so the actual rendered height (aspect-fit, not the raw
+  // photo's arbitrary dimensions) can be accounted for in the layout below,
+  // same way every other section here measures itself before advancing ty.
+  if (invoice.proofUrl) {
+    const proofBuffer = readProofImage(invoice.proofUrl);
+    const proofMeta = proofBuffer ? await sharp(proofBuffer).metadata().catch(() => null) : null;
+    if (proofBuffer && proofMeta?.width && proofMeta?.height) {
+      doc.fillColor("#111827").font("Helvetica-Bold").fontSize(9);
+      doc.text("Payment Proof", margin, ty, { width: contentWidth });
+      ty += doc.heightOfString("Payment Proof", { width: contentWidth }) + 6;
+
+      const maxWidth = contentWidth;
+      const maxHeight = 200;
+      const scale = Math.min(maxWidth / proofMeta.width, maxHeight / proofMeta.height, 1);
+      const renderWidth = proofMeta.width * scale;
+      const renderHeight = proofMeta.height * scale;
+      doc.image(proofBuffer, margin, ty, { width: renderWidth, height: renderHeight });
+      ty += renderHeight + 16;
+    }
+  }
+
   doc.fillColor("#111827").font("Helvetica-Bold").fontSize(9);
   doc.text("Terms & Conditions", margin, ty, { width: contentWidth });
   ty += doc.heightOfString("Terms & Conditions", { width: contentWidth }) + 6;
