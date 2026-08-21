@@ -7,10 +7,10 @@ const prisma_1 = require("../config/prisma");
 const razorpay_1 = require("../config/razorpay");
 const invoice_service_1 = require("./invoice.service");
 const billing_1 = require("../utils/billing");
-// Shared by the manual monthly payment (verifyRentalPayment) and the first
-// charge of a freshly-authorized autopay mandate (verifyAutopaySetup) — both
-// end with the subscription activated and one RENTAL invoice, recorded
-// identically regardless of which path triggered it.
+// Used by the one-time monthly rent payment (verifyRentalPayment) — marks
+// the subscription active/current and records one RENTAL invoice. Autopay's
+// own recurring charges are handled independently by the
+// subscription.charged webhook (webhook.controller.ts), not this function.
 async function activateRentalCycle(customerId, input) {
     // Idempotent: a duplicate client call (retry, double-submit, or a race
     // between the checkout handler and a webhook) for the same Razorpay
@@ -52,11 +52,26 @@ async function activateRentalCycle(customerId, input) {
 }
 // Creates a Razorpay Plan + Subscription for this customer's rent. The
 // mandate is UPI-app-agnostic (GPay/PhonePe/Paytm/etc.) — Razorpay Checkout
-// presents whatever the customer's bank supports. total_count=100 monthly
-// cycles (~8 years) comfortably covers the 12/24-month committed plans plus
-// the contract's month-to-month auto-renewal; a customer who somehow outlasts
-// that would need a fresh mandate, which is an acceptable edge case for now.
+// (or the subscription's own short_url authorization page) presents whatever
+// the customer's bank supports. total_count=100 monthly cycles (~8 years)
+// comfortably covers the 12/24-month committed plans plus the contract's
+// month-to-month auto-renewal; a customer who somehow outlasts that would
+// need a fresh mandate, which is an acceptable edge case for now.
+//
+// Always creates a brand-new subscription — a cancelled Razorpay mandate can
+// never be turned back on, so "activate autopay again" after a return is
+// always a fresh mandate, not a reactivation. The one thing this guards
+// against is creating a SECOND mandate on top of one that's already ACTIVE;
+// a stale PENDING (an earlier attempt that was abandoned before
+// authorization) is left retryable on purpose — this just overwrites it.
 async function createAutopaySubscription(customerId, rentalPlanDuration, rentalAmount) {
+    const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+        throw new Error("Customer not found");
+    }
+    if (customer.autopayStatus === "ACTIVE") {
+        throw new Error("Autopay is already active for this customer");
+    }
     const plan = await razorpay_1.razorpay.plans.create({
         period: "monthly",
         interval: 1,
@@ -81,7 +96,7 @@ async function createAutopaySubscription(customerId, rentalPlanDuration, rentalA
         data: {
             razorpayPlanId: plan.id,
             razorpaySubscriptionId: subscription.id,
-            autopayStatus: "PENDING_AUTH"
+            autopayStatus: "PENDING"
         }
     });
     return subscription;

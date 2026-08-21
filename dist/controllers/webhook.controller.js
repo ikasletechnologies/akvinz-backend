@@ -113,6 +113,27 @@ async function razorpayWebhook(req, res) {
             });
         }
     }
+    // The customer (or their bank/UPI app) paused the mandate without
+    // cancelling it outright — Razorpay keeps the subscription alive and will
+    // send "subscription.resumed" if it's turned back on.
+    if (payload.event === "subscription.paused") {
+        const subEntity = payload.payload?.subscription?.entity;
+        if (subEntity?.id) {
+            await prisma_1.prisma.customer.updateMany({
+                where: { razorpaySubscriptionId: subEntity.id },
+                data: { autopayStatus: "PAUSED" }
+            });
+        }
+    }
+    if (payload.event === "subscription.resumed") {
+        const subEntity = payload.payload?.subscription?.entity;
+        if (subEntity?.id) {
+            await prisma_1.prisma.customer.updateMany({
+                where: { razorpaySubscriptionId: subEntity.id },
+                data: { autopayStatus: "ACTIVE" }
+            });
+        }
+    }
     if (payload.event === "subscription.cancelled" || payload.event === "subscription.completed") {
         const subEntity = payload.payload?.subscription?.entity;
         if (subEntity?.id) {
@@ -125,6 +146,9 @@ async function razorpayWebhook(req, res) {
     res.json({ success: true });
 }
 async function razorpayxWebhook(req, res) {
+    if (!env_1.env.razorpay.webhookSecretX) {
+        return res.status(503).json({ success: false, message: "RazorpayX payouts are not configured on this server" });
+    }
     const signature = req.headers["x-razorpay-signature"];
     const rawBody = req.body;
     if (!signature) {

@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.finalizeRegistration = finalizeRegistration;
 const prisma_1 = require("../config/prisma");
+const razorpay_1 = require("../config/razorpay");
 const invoice_service_1 = require("./invoice.service");
 // This is where a Draft actually becomes a Customer. Two independent paths
 // can call this for the same payment — the customer's browser (verifyPayment,
@@ -40,6 +41,19 @@ async function finalizeRegistration(draftId, razorpayOrderId, razorpayPaymentId)
     if (existingByEmail) {
         return { status: "email_conflict" };
     }
+    // Opportunistic — only present when the customer paid via UPI, and this
+    // must never block registration if Razorpay's API hiccups (the payment
+    // itself was already verified by the caller's signature check).
+    let customerUpiVpa;
+    try {
+        const payment = await razorpay_1.razorpay.payments.fetch(razorpayPaymentId);
+        if (payment.method === "upi" && typeof payment.vpa === "string") {
+            customerUpiVpa = payment.vpa;
+        }
+    }
+    catch {
+        // Not fatal — the admin can still type the UPI ID in manually later.
+    }
     const customer = await prisma_1.prisma.customer.create({
         data: {
             fullName: draft.fullName,
@@ -59,7 +73,8 @@ async function finalizeRegistration(draftId, razorpayOrderId, razorpayPaymentId)
             residenceDocUrl: draft.residenceDocUrl,
             paymentStatus: "COMPLETED",
             razorpayOrderId,
-            razorpayPaymentId
+            razorpayPaymentId,
+            customerUpiVpa
         }
     });
     // The draft has now become a real customer, so it must not keep lingering

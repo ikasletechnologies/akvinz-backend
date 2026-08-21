@@ -159,7 +159,7 @@ async function renderInvoicePdf(invoice, customer) {
     const statusColor = STATUS_COLORS[invoice.status] || "#6b7280";
     doc.fillColor(statusColor).font("Helvetica-Bold").fontSize(9.5).text(invoice.status === "FUNDED" ? "Funded" : invoice.status === "REFUNDED" ? "Refunded" : invoice.status, rightX, ry, { width: rightColWidth, align: "right" });
     ry += 15;
-    doc.fillColor("#111827").font("Helvetica-Bold").fontSize(20).text(formatINR(invoice.amount), rightX, ry, { width: rightColWidth, align: "right" });
+    doc.fillColor("#111827").font("Helvetica-Bold").fontSize(20).text(formatINR(Number(invoice.amount)), rightX, ry, { width: rightColWidth, align: "right" });
     ry += 28;
     doc.fillColor("#9ca3af").font("Helvetica").fontSize(7.5);
     doc.text(invoice.reason || "No reason available.", rightX, ry, { width: rightColWidth, align: "right" });

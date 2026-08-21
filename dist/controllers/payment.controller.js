@@ -3,9 +3,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createOrder = createOrder;
 exports.verifyPayment = verifyPayment;
 exports.verifyRentalPayment = verifyRentalPayment;
-exports.setupAutopay = setupAutopay;
-exports.verifyAutopaySetup = verifyAutopaySetup;
-const prisma_1 = require("../config/prisma");
 const razorpay_1 = require("../config/razorpay");
 const payment_service_1 = require("../services/payment.service");
 const autopay_service_1 = require("../services/autopay.service");
@@ -115,55 +112,10 @@ async function verifyRentalPayment(req, res) {
         res.status(500).json({ success: false, error: error.message });
     }
 }
-// Step 1 of setting up rent autopay: creates the Razorpay Plan + Subscription
-// for this customer's chosen rental plan and returns the subscription id, so
-// the frontend can open Razorpay Checkout in subscription mode (the customer
-// authorizes the mandate via GPay/PhonePe/Paytm/any UPI app, card, or NACH).
-async function setupAutopay(req, res) {
-    try {
-        const { customerId, rentalPlanDuration, rentalAmount } = req.body;
-        if (!customerId || !rentalPlanDuration || !rentalAmount) {
-            return res.status(400).json({ success: false, message: "customerId, rentalPlanDuration and rentalAmount are required" });
-        }
-        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
-        if (!customer) {
-            return res.status(404).json({ success: false, message: "Customer not found" });
-        }
-        const subscription = await (0, autopay_service_1.createAutopaySubscription)(customerId, rentalPlanDuration, rentalAmount);
-        res.json({ success: true, subscriptionId: subscription.id });
-    }
-    catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-}
-// Step 2: called once the customer authorizes the mandate in Razorpay
-// Checkout. This first authorization charge activates the subscription the
-// same way a manual rental payment does (activateRentalCycle) — every charge
-// after this one arrives automatically via the subscription.charged webhook.
-async function verifyAutopaySetup(req, res) {
-    try {
-        const { customerId, rentalPlanDuration, rentalAmount, razorpay_payment_id, razorpay_subscription_id, razorpay_signature } = req.body;
-        const isValid = (0, payment_service_1.verifyRazorpaySubscriptionSignature)(razorpay_subscription_id, razorpay_payment_id, razorpay_signature);
-        if (!isValid) {
-            return res.status(400).json({ success: false, message: "Invalid signature sent!" });
-        }
-        if (!customerId) {
-            return res.status(400).json({ success: false, message: "customerId is required" });
-        }
-        await prisma_1.prisma.customer.update({
-            where: { id: customerId },
-            data: { autopayStatus: "ACTIVE" }
-        });
-        const { invoice } = await (0, autopay_service_1.activateRentalCycle)(customerId, {
-            rentalPlanDuration,
-            rentalAmount,
-            transactionId: razorpay_payment_id,
-            paymentMethod: "Razorpay"
-        });
-        return res.json({ success: true, message: "Autopay set up successfully", invoiceId: invoice.id });
-    }
-    catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-}
+// Autopay setup is now admin-triggered (see admin.controller.ts's
+// activateAutopay) — the customer authorizes on Razorpay's own hosted
+// subscription page (its short_url), not through our Checkout.js, and
+// confirmation arrives purely via the subscription.activated/charged webhook
+// (webhook.controller.ts). There's no client-side callback to verify here
+// anymore, so the old setupAutopay/verifyAutopaySetup pair was removed.
 //# sourceMappingURL=payment.controller.js.map

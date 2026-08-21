@@ -12,9 +12,11 @@ exports.createCustomer = createCustomer;
 exports.uploadCustomerDocuments = uploadCustomerDocuments;
 exports.deleteCustomerDocument = deleteCustomerDocument;
 exports.getCustomer = getCustomer;
+exports.getCustomerUpiVpa = getCustomerUpiVpa;
 exports.updateCustomer = updateCustomer;
 exports.deleteCustomer = deleteCustomer;
 exports.createPaymentLink = createPaymentLink;
+exports.activateAutopay = activateAutopay;
 exports.listCustomerPaymentLinks = listCustomerPaymentLinks;
 exports.createPayout = createPayout;
 exports.listCustomerPayouts = listCustomerPayouts;
@@ -41,6 +43,7 @@ const planChange_service_1 = require("../services/planChange.service");
 const invoice_service_1 = require("../services/invoice.service");
 const refund_service_1 = require("../services/refund.service");
 const planPricing_1 = require("../utils/planPricing");
+const autopay_service_1 = require("../services/autopay.service");
 const fileUrl_1 = require("../utils/fileUrl");
 function login(req, res) {
     const { email, password } = req.body;
@@ -149,8 +152,8 @@ async function getStats(req, res) {
                 rentalDue,
                 returnsInitiated,
                 customersRefunded: refundedInvoices.length,
-                rentalRevenue: rentalRevenueAgg._sum.amount || 0,
-                totalDeposits: totalDepositsAgg._sum.amount || 0,
+                rentalRevenue: Number(rentalRevenueAgg._sum.amount) || 0,
+                totalDeposits: Number(totalDepositsAgg._sum.amount) || 0,
                 assetsReceived
             }
         });
@@ -377,6 +380,42 @@ async function getCustomer(req, res) {
         res.status(500).json({ success: false, message: error.message });
     }
 }
+// Looks up a customer's UPI VPA from their original security-deposit
+// payment on demand, for customers who registered before customerUpiVpa
+// started being captured automatically (registration.service.ts) — every
+// customer already has razorpayPaymentId on file regardless of when they
+// registered, so this works retroactively. Only returns something if that
+// original payment was actually made via UPI; caches a hit back onto the
+// customer so future lookups (and other admins) skip the Razorpay call.
+async function getCustomerUpiVpa(req, res) {
+    try {
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
+        if (!customer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        if (customer.customerUpiVpa) {
+            return res.json({ success: true, upiVpa: customer.customerUpiVpa });
+        }
+        if (!customer.razorpayPaymentId) {
+            return res.json({ success: true, upiVpa: null });
+        }
+        try {
+            const payment = await razorpay_1.razorpay.payments.fetch(customer.razorpayPaymentId);
+            const upiVpa = payment.method === "upi" && typeof payment.vpa === "string" ? payment.vpa : null;
+            if (upiVpa) {
+                await prisma_1.prisma.customer.update({ where: { id: customer.id }, data: { customerUpiVpa: upiVpa } });
+            }
+            res.json({ success: true, upiVpa });
+        }
+        catch {
+            // Old/archived payment, API hiccup, etc. — not fatal, admin can still type it in.
+            res.json({ success: true, upiVpa: null });
+        }
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
 async function updateCustomer(req, res) {
     try {
         const allowedFields = [
@@ -458,6 +497,16 @@ async function createPaymentLink(req, res) {
         // instead of needing a separate manual confirmation.
         const planChangeTargetDuration = Number(req.body.planChangeTargetDuration);
         const hasPlanChangeTarget = planChangeTargetDuration === 12 || planChangeTargetDuration === 24;
+        // The plan-change top-up link is self-explanatory and generated
+        // programmatically, so it gets a fixed reason instead of asking the
+        // admin to type one; every other "Collect From Customer" link requires
+        // an explicit reason.
+        const reason = hasPlanChangeTarget
+            ? `Plan change top-up (${planChangeTargetDuration} months)`
+            : typeof req.body.reason === "string" ? req.body.reason.trim() : "";
+        if (!reason) {
+            return res.status(400).json({ success: false, message: "A reason is required" });
+        }
         const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
         if (!customer) {
             return res.status(404).json({ success: false, message: "Customer not found" });
@@ -482,6 +531,7 @@ async function createPaymentLink(req, res) {
             data: {
                 customerId: customer.id,
                 amount,
+                reason,
                 razorpayPaymentLinkId: paymentLink.id,
                 shortUrl: paymentLink.short_url,
                 expireBy: new Date(paymentLink.expire_by * 1000),
@@ -494,13 +544,38 @@ async function createPaymentLink(req, res) {
         res.status(500).json({ success: false, message: error.error?.description || error.message });
     }
 }
+// Admin-triggered: creates a fresh Razorpay Subscription (never a
+// reactivation of an old cancelled one — Razorpay doesn't support that) and
+// hands back its short_url, the same way createPaymentLink above hands back
+// a shareable link for a one-time payment. Autopay only flips to ACTIVE once
+// the customer opens that link, authorizes it themselves, and Razorpay
+// confirms via webhook (see webhook.controller.ts) — this call just starts
+// that process, it does not activate anything itself.
+async function activateAutopay(req, res) {
+    try {
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
+        if (!customer) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        if (!customer.rentalPlanDuration || !customer.rentalAmount) {
+            return res.status(400).json({ success: false, message: "This customer has no established rental plan/amount yet — activate their rental first." });
+        }
+        const subscription = await (0, autopay_service_1.createAutopaySubscription)(customer.id, customer.rentalPlanDuration, customer.rentalAmount);
+        res.json({ success: true, shortUrl: subscription.short_url });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.error?.description || error.message });
+    }
+}
 async function listCustomerPaymentLinks(req, res) {
     try {
         const paymentLinks = await prisma_1.prisma.paymentLinkRequest.findMany({
             where: { customerId: req.params.id },
             orderBy: { createdAt: "desc" }
         });
-        res.json({ success: true, paymentLinks });
+        // amount is a Prisma Decimal — JSON.stringify would otherwise serialize
+        // it as a string (e.g. "3.50") instead of a number.
+        res.json({ success: true, paymentLinks: paymentLinks.map((p) => ({ ...p, amount: Number(p.amount) })) });
     }
     catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -894,11 +969,18 @@ async function cancelRefundOtp(req, res) {
         res.status(500).json({ success: false, message: error.message });
     }
 }
+// A UPI VPA is "<handle>@<psp bank/app name>" — e.g. name@okhdfcbank, 9999999999@ybl.
+const VPA_PATTERN = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
 async function requestPayoutOtp(req, res) {
     try {
         const customerId = req.params.id;
         const amountPaise = Number(req.body.amountPaise);
         const { reason } = req.body;
+        // "bank" (default, backward-compatible) pays into the customer's saved
+        // bank details; "upi" pays a UPI ID the admin types in for this payout,
+        // so a payment doesn't have to wait on the customer submitting bank
+        // details first.
+        const payoutMethod = req.body.payoutMethod === "upi" ? "upi" : "bank";
         if (!amountPaise || amountPaise <= 0) {
             return res.status(400).json({ success: false, message: "Valid amount in paise is required" });
         }
@@ -909,20 +991,37 @@ async function requestPayoutOtp(req, res) {
         if (!customer) {
             return res.status(404).json({ success: false, message: "Customer not found" });
         }
-        // Verify recipient details are present
-        const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
-        const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
-        const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
-        if (!bankAccountNumber || !bankIfscCode || !bankAccountHolderName) {
-            return res.status(400).json({
-                success: false,
-                message: "Customer bank account details (account number, IFSC, name) must be saved first."
-            });
+        let recipientNameSnapshot;
+        let recipientIdentifierSnapshot;
+        let payoutDestinationType;
+        let payoutVpa = null;
+        if (payoutMethod === "upi") {
+            const upiId = typeof req.body.upiId === "string" ? req.body.upiId.trim() : "";
+            if (!VPA_PATTERN.test(upiId)) {
+                return res.status(400).json({ success: false, message: "Enter a valid UPI ID (e.g. name@bank)" });
+            }
+            payoutDestinationType = "VPA";
+            payoutVpa = upiId;
+            recipientNameSnapshot = customer.fullName;
+            recipientIdentifierSnapshot = upiId;
         }
-        // Mask bank account number for safety snapshot
-        const maskedAccount = `••••${bankAccountNumber.slice(-4)}`;
-        const recipientNameSnapshot = bankAccountHolderName;
-        const recipientIdentifierSnapshot = `${customer.bankName || customer.refundBankName || "Bank"} (${maskedAccount})`;
+        else {
+            // Verify recipient details are present
+            const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
+            const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
+            const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
+            if (!bankAccountNumber || !bankIfscCode || !bankAccountHolderName) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Customer bank account details (account number, IFSC, name) must be saved first."
+                });
+            }
+            // Mask bank account number for safety snapshot
+            const maskedAccount = `••••${bankAccountNumber.slice(-4)}`;
+            payoutDestinationType = "BANK_ACCOUNT";
+            recipientNameSnapshot = bankAccountHolderName;
+            recipientIdentifierSnapshot = `${customer.bankName || customer.refundBankName || "Bank"} (${maskedAccount})`;
+        }
         // Generate unique idempotency key
         const idempotencyKey = crypto.randomUUID();
         // Call Twilio Verify API to send OTP
@@ -945,6 +1044,8 @@ async function requestPayoutOtp(req, res) {
                 status: "OTP_PENDING",
                 recipientNameSnapshot,
                 recipientIdentifierSnapshot,
+                payoutDestinationType,
+                payoutVpa,
                 idempotencyKey,
                 otpChallengeId,
                 otpExpiresAt,
@@ -977,6 +1078,9 @@ async function verifyPayoutOtpAndExecute(req, res) {
         });
         if (!transaction) {
             return res.status(404).json({ success: false, message: "Transaction not found" });
+        }
+        if (!env_1.env.razorpay.accountNumberX) {
+            return res.status(503).json({ success: false, message: "RazorpayX payouts are not configured on this server" });
         }
         if (transaction.status !== "OTP_PENDING") {
             return res.status(400).json({ success: false, message: "Transaction is not in OTP_PENDING status" });
@@ -1033,8 +1137,31 @@ async function verifyPayoutOtpAndExecute(req, res) {
                 data: { razorpayXContactId: contactId }
             });
         }
-        // 2. Create fund account if not exists
-        if (!fundAccountId) {
+        // 2. Create fund account if not exists.
+        // UPI payouts always create a fresh fund account for the VPA the admin
+        // typed in for this specific transaction — it isn't cached on the
+        // customer, since (unlike bank details) it isn't a stored profile field
+        // and could be different on the next payout.
+        if (transaction.payoutDestinationType === "VPA" && transaction.payoutVpa) {
+            const faRes = await fetch("https://api.razorpay.com/v1/fund_accounts", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Basic ${basicAuth}`
+                },
+                body: JSON.stringify({
+                    contact_id: contactId,
+                    account_type: "vpa",
+                    vpa: { address: transaction.payoutVpa }
+                })
+            });
+            const faData = await faRes.json();
+            if (!faRes.ok) {
+                throw new Error(faData.error?.description || "Failed to create RazorpayX Fund Account");
+            }
+            fundAccountId = faData.id;
+        }
+        else if (!fundAccountId) {
             const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
             const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
             const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
@@ -1077,7 +1204,9 @@ async function verifyPayoutOtpAndExecute(req, res) {
                 fund_account_id: fundAccountId,
                 amount: transaction.amountPaise,
                 currency: "INR",
-                mode: "IMPS",
+                // Razorpay requires the payout mode to match the fund account type —
+                // UPI for a vpa fund account, IMPS for a bank_account one.
+                mode: transaction.payoutDestinationType === "VPA" ? "UPI" : "IMPS",
                 purpose: "refund",
                 narration: transaction.reason.substring(0, 30),
                 reference_id: transaction.id
