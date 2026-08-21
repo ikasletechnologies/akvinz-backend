@@ -89,8 +89,8 @@ export async function razorpayWebhook(req: Request, res: Response): Promise<any>
         // /subscription/autopay/verify call for the exact same charge — it
         // usually arrives first. Both paths now funnel through
         // activateRentalCycle so whichever wins fully populates the
-        // customer record (rentalPlanDuration, subscriptionStart,
-        // billingDay, subscriptionEnd) instead of only the fields this
+        // customer record (rentalPlanDuration, currentRentStartDate,
+        // billingDay, nextRentDueDate) instead of only the fields this
         // handler used to set directly; activateRentalCycle's own
         // transactionId check makes running it from both paths a no-op the
         // second time.

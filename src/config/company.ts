@@ -10,8 +10,8 @@ export const company = {
     "Ramanuja Nagar,",
     "Coimbatore, Tamil Nadu - 641014"
   ],
-  email: "accounts@akvinz.com",
+  email: "rentomate@akvinz.com",
   website: "www.akvinz.com",
-  supportEmail: "customerconnect@akvinz.com",
+  supportEmail: "rentomate@akvinz.com",
   whatsapp: "81100-16161" // WhatsApp only
 };

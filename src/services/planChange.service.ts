@@ -1,6 +1,7 @@
 import { prisma } from "../config/prisma";
 import { createInvoice } from "./invoice.service";
 import { securityDepositAmount, rentalAmountForPlan } from "../utils/planPricing";
+import { addBillingMonths } from "../utils/billing";
 
 interface ApplyPlanChangeInput {
   customerId: string;
@@ -38,12 +39,21 @@ export async function applyPlanChange(input: ApplyPlanChangeInput) {
     ? (input.amountHandled as number)
     : Math.abs(difference);
 
+  // planStartDate stays fixed (the term is still counted from the original
+  // rent-start date, per business rule) — only the term LENGTH changes, so
+  // planEndDate is the one thing here that needs recomputing. Nothing to
+  // recompute yet if the customer hasn't made their first rent payment.
+  const planEndDate = customer.planStartDate && customer.billingDay
+    ? addBillingMonths(customer.planStartDate, newPlanDuration, customer.billingDay)
+    : customer.planEndDate;
+
   const updated = await prisma.customer.update({
     where: { id: customer.id },
     data: {
       planDuration: newPlanDuration,
       rentalPlanDuration: newPlanDuration,
       rentalAmount: rentalAmountForPlan(newPlanDuration),
+      planEndDate,
       // One-time proof for this specific downgrade — clear both so the next
       // downgrade can't be confirmed off a stale upload or refund id.
       planChangeRefundProofUrl: null,

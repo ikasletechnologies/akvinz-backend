@@ -13,6 +13,11 @@ interface CreateInvoiceInput {
   transactionId?: string | null;
   status: string;
   reason?: string | null;
+  // The rental cycle this bill covers — only meaningful for type=RENTAL.
+  // Distinct from documentDate (when the payment happened): a late payment
+  // covers a period starting from the payment date, not the original due date.
+  rentStartDate?: Date | null;
+  rentEndDate?: Date | null;
 }
 
 export async function createInvoice(input: CreateInvoiceInput) {
@@ -28,7 +33,9 @@ export async function createInvoice(input: CreateInvoiceInput) {
         paymentMethod: input.paymentMethod,
         transactionId: input.transactionId ?? null,
         status: input.status,
-        reason: input.reason ?? null
+        reason: input.reason ?? null,
+        rentStartDate: input.rentStartDate ?? null,
+        rentEndDate: input.rentEndDate ?? null
       }
     });
   });

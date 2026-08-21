@@ -38,11 +38,28 @@ model Customer {
   // Rental Subscription info
   rentalPlanDuration Int? // 12 or 24
   rentalAmount       Int? // 699 or 449
-  subscriptionStatus String    @default("INACTIVE") // INACTIVE, ACTIVE, CANCELLED
-  subscriptionStart  DateTime?
-  subscriptionEnd    DateTime?
+  subscriptionStatus String    @default("INACTIVE") // INACTIVE, ACTIVE, CANCELLED, PENDING_DUE
   lastPaymentDate    DateTime?
-  billingDay         Int? // day-of-month billing anchor (from subscriptionStart), used to compute every renewal so drift doesn't accumulate month over month
+  billingDay         Int? // day-of-month billing anchor (from currentRentStartDate), used to compute every renewal so drift doesn't accumulate month over month
+
+  // The whole committed 12/24-month term — fixed once at the customer's
+  // first-ever rent payment (activateRentalCycle), and only ever recomputed
+  // by an explicit plan upgrade/downgrade (planChange.service.ts). NEVER
+  // touched by a routine monthly payment.
+  planStartDate DateTime?
+  planEndDate   DateTime?
+
+  // The customer's CURRENT billing cycle — overwritten on every rent payment
+  // (manual or autopay). currentRentEndDate/nextRentDueDate are one day
+  // apart by construction (the last day this payment covers vs. when the
+  // next one is due); processRenewals/DueDateCell operate on nextRentDueDate.
+  // These used to be conflated with planStartDate/planEndDate under the
+  // single "subscriptionStart/subscriptionEnd" fields, which meant the
+  // "Plan Term" display silently drifted forward every month a customer paid
+  // rent — that's why these are now separate columns.
+  currentRentStartDate DateTime?
+  currentRentEndDate   DateTime?
+  nextRentDueDate      DateTime?
 
   // Rental autopay (UPI Autopay / e-mandate via Razorpay Subscriptions).
   // Once ACTIVE, Razorpay itself drives the billing cycle for this customer —
@@ -126,6 +143,13 @@ model Invoice {
   transactionId String? // razorpayPaymentId, null for manual refunds
   status        String // FUNDED, REFUNDED
   reason        String? // shown as "No reason available." when null
+
+  // The rental cycle this bill covers — only set for type=RENTAL, distinct
+  // from documentDate/paymentDate (when the payment was actually made). A
+  // late payment's period starts from the payment date, not the originally
+  // scheduled due date — see activateRentalCycle.
+  rentStartDate DateTime?
+  rentEndDate   DateTime?
 
   documentDate DateTime @default(now())
   createdAt    DateTime @default(now())

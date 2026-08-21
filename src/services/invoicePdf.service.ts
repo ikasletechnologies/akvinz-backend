@@ -158,8 +158,14 @@ export async function renderInvoicePdf(invoice: Invoice, customer: Customer): Pr
   };
 
   const leftStartY = y;
-  field(leftX, y, "Document Date", formatDate(invoice.documentDate), 280);
+  field(leftX, y, "Payment Date", formatDate(invoice.documentDate), 280);
   y += 32;
+  if (invoice.rentStartDate && invoice.rentEndDate) {
+    field(leftX, y, "Rent Start", formatDate(invoice.rentStartDate), 280);
+    y += 32;
+    field(leftX, y, "Rent End", formatDate(invoice.rentEndDate), 280);
+    y += 32;
+  }
   field(leftX, y, "Payment method", invoice.paymentMethod, 280);
   y += 32;
   field(leftX, y, "Transaction ID", invoice.transactionId || "N/A", 280);
