@@ -1,8 +1,10 @@
 import PDFDocument from "pdfkit";
 import sharp from "sharp";
 import path from "path";
+import fs from "fs";
 import { Customer, Invoice } from "@prisma/client";
 import { company } from "../config/company";
+import { env } from "../config/env";
 
 const LOGO_PATH = path.join(__dirname, "..", "assets", "logo.svg");
 
@@ -12,6 +14,20 @@ function getLogoPng(): Promise<Buffer> {
     logoPngPromise = sharp(LOGO_PATH, { density: 300 }).resize({ height: 200 }).png().toBuffer();
   }
   return logoPngPromise;
+}
+
+// proofUrl is stored as `${baseUrl}/uploads/{filename}` (see fileUrl.ts) —
+// read straight off disk (same process, no network hop) rather than
+// fetching it back over HTTP. Returns null if the file is missing/unreadable
+// so a broken/deleted proof photo never breaks receipt generation.
+function readProofImage(proofUrl: string): Buffer | null {
+  try {
+    const filename = proofUrl.split("/uploads/").pop();
+    if (!filename) return null;
+    return fs.readFileSync(path.join(env.uploadDir, filename));
+  } catch {
+    return null;
+  }
 }
 
 const STATUS_COLORS: Record<string, string> = {
