@@ -10,8 +10,8 @@ exports.updateBankDetails = updateBankDetails;
 exports.closeAccount = closeAccount;
 const prisma_1 = require("../config/prisma");
 const fileUrl_1 = require("../utils/fileUrl");
-const invoice_service_1 = require("../services/invoice.service");
 const autopay_service_1 = require("../services/autopay.service");
+const refund_service_1 = require("../services/refund.service");
 // Shared by saveDraft (autosave while typing) and register (the final
 // "submit registration" step, which now also just writes a draft — a
 // Customer row is only ever created once payment succeeds, in verifyPayment).
@@ -287,23 +287,19 @@ async function closeAccount(req, res) {
         if (customer.refundAmount === null) {
             return res.status(400).json({ success: false, message: "Refund amount has not been finalized yet" });
         }
+        // Move the money via Razorpay before marking the account as refunded —
+        // if this fails (amount exceeds what's refundable, refund window
+        // expired, network error), the customer must stay PENDING_REFUND rather
+        // than being marked REFUNDED with nothing actually sent.
+        const { invoice } = await (0, refund_service_1.refundSecurityDeposit)(customerId, customer.refundAmount, "Refund of security deposit following product return");
         const updated = await prisma_1.prisma.customer.update({
             where: { id: customerId },
             data: { paymentStatus: "REFUNDED" }
         });
-        const invoice = await (0, invoice_service_1.createInvoice)({
-            type: "REFUND",
-            customerId,
-            productType: "Security Deposit Refund",
-            amount: customer.refundAmount,
-            paymentMethod: "Manual",
-            status: "REFUNDED",
-            reason: "Refund of security deposit following product return"
-        });
         res.json({ success: true, customer: updated, invoiceId: invoice.id });
     }
     catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        res.status(500).json({ success: false, message: error.error?.description || error.message });
     }
 }
 //# sourceMappingURL=customer.controller.js.map

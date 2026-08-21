@@ -21,6 +21,7 @@ export async function markPaymentLinkPaid(recordId: string, transactionId: strin
   });
 
   const paymentMethod = transactionId ? "Razorpay" : "Manual";
+  const amount = Number(record.amount); // record.amount is a Prisma Decimal
 
   // A "Change Plan" top-up link paying off applies the plan change right
   // here — no separate manual "Confirm & Apply Plan Change" click needed.
@@ -32,7 +33,7 @@ export async function markPaymentLinkPaid(recordId: string, transactionId: strin
     await applyPlanChange({
       customerId: record.customerId,
       newPlanDuration: record.planChangeTargetDuration,
-      amountHandled: record.amount,
+      amountHandled: amount,
       paymentMethod,
       transactionId
     });
@@ -41,7 +42,8 @@ export async function markPaymentLinkPaid(recordId: string, transactionId: strin
       type: "PAYMENT_LINK",
       customerId: record.customerId,
       productType: "Payment Link Collection",
-      amount: record.amount,
+      amount,
+      reason: record.reason,
       paymentMethod,
       transactionId,
       status: "FUNDED"

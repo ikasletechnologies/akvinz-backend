@@ -4,6 +4,7 @@ const express_1 = require("express");
 const upload_middleware_1 = require("../middlewares/upload.middleware");
 const customer_controller_1 = require("../controllers/customer.controller");
 const invoice_controller_1 = require("../controllers/invoice.controller");
+const locationChange_controller_1 = require("../controllers/locationChange.controller");
 const router = (0, express_1.Router)();
 router.post("/register", upload_middleware_1.upload.fields([
     { name: "aadharFrontFile", maxCount: 1 },
@@ -20,5 +21,6 @@ router.get("/customer/:mobileNumber", customer_controller_1.getCustomerByMobile)
 router.post("/subscription/return", customer_controller_1.requestReturn);
 router.post("/account/close", customer_controller_1.closeAccount);
 router.post("/account/bank-details", customer_controller_1.updateBankDetails);
+router.post("/customer/location-change", upload_middleware_1.upload.fields([{ name: "proofDocument", maxCount: 1 }]), locationChange_controller_1.submitLocationChange);
 exports.default = router;
 //# sourceMappingURL=customer.routes.js.map

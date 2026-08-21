@@ -16,6 +16,17 @@ interface ActivateRentalCycleInput {
 // own recurring charges are handled independently by the
 // subscription.charged webhook (webhook.controller.ts), not this function.
 export async function activateRentalCycle(customerId: string, input: ActivateRentalCycleInput) {
+  // Idempotent: a duplicate client call (retry, double-submit, or a race
+  // between the checkout handler and a webhook) for the same Razorpay
+  // payment must not record it — and therefore charge the customer's plan
+  // dates/invoice — twice. Mirrors the same guard already used on the
+  // subscription.charged webhook handler.
+  const existingInvoice = await prisma.invoice.findFirst({ where: { transactionId: input.transactionId } });
+  if (existingInvoice) {
+    const existingCustomer = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+    return { customer: existingCustomer, invoice: existingInvoice };
+  }
+
   const newStart = new Date();
   const billingDay = newStart.getDate();
   const newEnd = calculateNextBillingDate(newStart, billingDay, "MONTHLY");
@@ -85,7 +96,11 @@ export async function createAutopaySubscription(customerId: string, rentalPlanDu
     plan_id: plan.id,
     customer_notify: 1,
     total_count: 100,
-    notes: { customerId }
+    // rentalPlanDuration is echoed back on every subscription.charged webhook
+    // (see webhook.controller.ts) — that's a separate, faster delivery path
+    // than the browser's own verify call, and has no other way to know which
+    // plan this mandate is for.
+    notes: { customerId, rentalPlanDuration: String(rentalPlanDuration) }
   });
 
   await prisma.customer.update({

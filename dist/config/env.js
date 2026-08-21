@@ -29,11 +29,14 @@ exports.env = {
         keyId: required("RAZORPAY_KEY_ID"),
         keySecret: required("RAZORPAY_KEY_SECRET"),
         webhookSecret: required("RAZORPAY_WEBHOOK_SECRET"),
+        webhookSecretX: required("RAZORPAY_WEBHOOK_SECRET"),
+        accountNumberX: required("RAZORPAYX_ACCOUNT_NUMBER"),
     },
     admin: {
         email: required("ADMIN_EMAIL"),
         password: required("ADMIN_PASSWORD"),
         jwtSecret: required("ADMIN_JWT_SECRET"),
+        mobile: required("ADMIN_MOBILE"),
     },
 };
 //# sourceMappingURL=env.js.map

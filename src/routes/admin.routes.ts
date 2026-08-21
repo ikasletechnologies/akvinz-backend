@@ -1,9 +1,14 @@
 import { Router } from "express";
 import { requireAdmin } from "../middlewares/requireAdmin";
 import { upload } from "../middlewares/upload.middleware";
+<<<<<<< HEAD
 import { login, getStats, listCustomers, createCustomer, getCustomer, updateCustomer, deleteCustomer, uploadCustomerDocuments, deleteCustomerDocument, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, activateAutopay, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts } from "../controllers/admin.controller";
+=======
+import { login, getStats, listCustomers, createCustomer, getCustomer, getCustomerUpiVpa, updateCustomer, deleteCustomer, uploadCustomerDocuments, deleteCustomerDocument, listDrafts, deleteDraft, triggerRenewals, createPaymentLink, listCustomerPaymentLinks, markPaymentLinkAsPaid, changePlan, createPayout, listCustomerPayouts, refundNow, refundPlanChangeViaRazorpay, requestRefundOtp, verifyRefundOtpAndExecute, cancelRefundOtp, requestPayoutOtp, verifyPayoutOtpAndExecute, cancelPayout, getCustomerMoneyTransactions } from "../controllers/admin.controller";
+>>>>>>> f26b1fe608716ec895c1b4e99239c7df9085aaaf
 import { downloadInvoicePdf, listCustomerInvoices } from "../controllers/invoice.controller";
 import { listReturnEvents, createReturnEvent } from "../controllers/returnProcess.controller";
+import { listLocationChangeRequests, reviewLocationChangeRequest } from "../controllers/locationChange.controller";
 
 const router = Router();
 
@@ -23,6 +28,7 @@ router.post(
   createCustomer
 );
 router.get("/admin/customers/:id", requireAdmin, getCustomer);
+router.get("/admin/customers/:id/upi-vpa", requireAdmin, getCustomerUpiVpa);
 router.patch("/admin/customers/:id", requireAdmin, updateCustomer);
 router.delete("/admin/customers/:id", requireAdmin, deleteCustomer);
 router.post(
@@ -53,7 +59,16 @@ router.post(
   createPayout
 );
 router.get("/admin/customers/:id/payouts", requireAdmin, listCustomerPayouts);
+router.post("/admin/customers/:id/refund-now", requireAdmin, refundNow);
 router.post("/admin/customers/:id/change-plan", requireAdmin, changePlan);
+router.post("/admin/customers/:id/plan-change-refund", requireAdmin, refundPlanChangeViaRazorpay);
+router.post("/admin/customers/:id/plan-change/refund/request-otp", requireAdmin, requestRefundOtp);
+router.post("/admin/customers/:id/plan-change/refund/verify-otp", requireAdmin, verifyRefundOtpAndExecute);
+router.post("/admin/customers/:id/plan-change/refund/cancel", requireAdmin, cancelRefundOtp);
+router.post("/admin/customers/:id/money-transactions/payout/request-otp", requireAdmin, requestPayoutOtp);
+router.post("/admin/money-transactions/payout/verify-otp", requireAdmin, verifyPayoutOtpAndExecute);
+router.post("/admin/money-transactions/payout/cancel", requireAdmin, cancelPayout);
+router.get("/admin/customers/:id/money-transactions", requireAdmin, getCustomerMoneyTransactions);
 router.get("/admin/customers/:id/invoices", requireAdmin, listCustomerInvoices);
 router.get("/admin/invoices/:invoiceId/pdf", requireAdmin, downloadInvoicePdf);
 router.get("/admin/customers/:id/return-events", requireAdmin, listReturnEvents);
@@ -63,5 +78,7 @@ router.post(
   upload.fields([{ name: "defectImages", maxCount: 3 }]),
   createReturnEvent
 );
+router.get("/admin/location-change-requests", requireAdmin, listLocationChangeRequests);
+router.post("/admin/location-change-requests/:id/review", requireAdmin, reviewLocationChangeRequest);
 
 export default router;

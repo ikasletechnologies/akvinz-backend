@@ -4,12 +4,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.razorpayWebhook = razorpayWebhook;
+exports.razorpayxWebhook = razorpayxWebhook;
 const crypto_1 = __importDefault(require("crypto"));
 const prisma_1 = require("../config/prisma");
 const env_1 = require("../config/env");
 const paymentLink_service_1 = require("../services/paymentLink.service");
-const invoice_service_1 = require("../services/invoice.service");
 const registration_service_1 = require("../services/registration.service");
+const autopay_service_1 = require("../services/autopay.service");
 // Razorpay calls this with the raw request body (see app.ts, which mounts
 // this route with express.raw() ahead of the global express.json()) so the
 // HMAC signature can be verified against the exact bytes Razorpay signed.
@@ -71,33 +72,32 @@ async function razorpayWebhook(req, res) {
                 where: { razorpaySubscriptionId: subEntity.id }
             });
             if (customer) {
-                // Idempotent: Razorpay can redeliver the same webhook, and the
-                // client-side verify call may have already recorded this same
-                // charge as the mandate's first payment.
-                const alreadyRecorded = await prisma_1.prisma.invoice.findFirst({
-                    where: { transactionId: paymentEntity.id }
+                await prisma_1.prisma.customer.update({
+                    where: { id: customer.id },
+                    data: { autopayStatus: "ACTIVE" }
                 });
-                if (!alreadyRecorded) {
-                    const currentEnd = subEntity.current_end ? new Date(subEntity.current_end * 1000) : null;
-                    await prisma_1.prisma.customer.update({
-                        where: { id: customer.id },
-                        data: {
-                            lastPaymentDate: new Date(),
-                            subscriptionStatus: "ACTIVE",
-                            autopayStatus: "ACTIVE",
-                            ...(currentEnd ? { subscriptionEnd: currentEnd } : {})
-                        }
-                    });
-                    await (0, invoice_service_1.createInvoice)({
-                        type: "RENTAL",
-                        customerId: customer.id,
-                        productType: "Water Purifier",
-                        amount: Math.round((paymentEntity.amount ?? 0) / 100),
-                        paymentMethod: "Razorpay",
-                        transactionId: paymentEntity.id,
-                        status: "FUNDED"
-                    });
-                }
+                // This is a server-to-server delivery racing the browser's own
+                // /subscription/autopay/verify call for the exact same charge — it
+                // usually arrives first. Both paths now funnel through
+                // activateRentalCycle so whichever wins fully populates the
+                // customer record (rentalPlanDuration, subscriptionStart,
+                // billingDay, subscriptionEnd) instead of only the fields this
+                // handler used to set directly; activateRentalCycle's own
+                // transactionId check makes running it from both paths a no-op the
+                // second time.
+                //
+                // rentalPlanDuration rides along in the subscription's notes (set
+                // at creation in createAutopaySubscription) since Razorpay's
+                // payload has no other way to say which plan this mandate is for.
+                // Falls back to whatever plan is already on file for subscriptions
+                // created before that note existed.
+                const rentalPlanDuration = Number(subEntity.notes?.rentalPlanDuration) || customer.rentalPlanDuration || customer.planDuration;
+                await (0, autopay_service_1.activateRentalCycle)(customer.id, {
+                    rentalPlanDuration,
+                    rentalAmount: Math.round((paymentEntity.amount ?? 0) / 100),
+                    transactionId: paymentEntity.id,
+                    paymentMethod: "Razorpay"
+                });
             }
         }
     }
@@ -121,6 +121,92 @@ async function razorpayWebhook(req, res) {
                 data: { autopayStatus: "CANCELLED" }
             });
         }
+    }
+    res.json({ success: true });
+}
+async function razorpayxWebhook(req, res) {
+    const signature = req.headers["x-razorpay-signature"];
+    const rawBody = req.body;
+    if (!signature) {
+        return res.status(400).json({ success: false, message: "Missing signature" });
+    }
+    const expectedSignature = crypto_1.default
+        .createHmac("sha256", env_1.env.razorpay.webhookSecretX)
+        .update(rawBody)
+        .digest("hex");
+    if (signature !== expectedSignature) {
+        return res.status(400).json({ success: false, message: "Invalid signature" });
+    }
+    const payload = JSON.parse(rawBody.toString("utf8"));
+    const eventId = payload.event_id;
+    const eventType = payload.event;
+    // Deduplication check
+    if (eventId) {
+        const existingEvent = await prisma_1.prisma.razorpayWebhookEvent.findUnique({
+            where: { eventId }
+        });
+        if (existingEvent) {
+            return res.json({ success: true, message: "Duplicate event skipped" });
+        }
+    }
+    const payoutEntity = payload.payload?.payout?.entity;
+    if (!payoutEntity || !payoutEntity.id) {
+        return res.status(400).json({ success: false, message: "Invalid payout payload" });
+    }
+    const payoutId = payoutEntity.id;
+    const razorpayStatus = payoutEntity.status; // e.g. 'processed', 'reversed', 'failed', 'rejected', 'queued', 'pending'
+    const utr = payoutEntity.utr || null;
+    const failureReason = payoutEntity.failure_reason || null;
+    const statusDetails = payoutEntity.status_details || {};
+    const statusReason = statusDetails.reason || failureReason || null;
+    const statusDescription = statusDetails.description || null;
+    // Map RazorpayX status to internal MoneyTransaction status
+    let internalStatus = "PROCESSING";
+    if (razorpayStatus === "processed") {
+        internalStatus = "SUCCESS";
+    }
+    else if (razorpayStatus === "reversed") {
+        internalStatus = "REVERSED";
+    }
+    else if (razorpayStatus === "failed") {
+        internalStatus = "FAILED";
+    }
+    else if (razorpayStatus === "rejected") {
+        internalStatus = "REJECTED";
+    }
+    else if (razorpayStatus === "queued") {
+        internalStatus = "QUEUED";
+    }
+    else if (razorpayStatus === "pending") {
+        internalStatus = "PENDING";
+    }
+    else if (razorpayStatus === "cancelled") {
+        internalStatus = "CANCELLED";
+    }
+    const transaction = await prisma_1.prisma.moneyTransaction.findUnique({
+        where: { razorpayPayoutId: payoutId }
+    });
+    if (transaction) {
+        await prisma_1.prisma.moneyTransaction.update({
+            where: { id: transaction.id },
+            data: {
+                status: internalStatus,
+                razorpayPayoutStatus: razorpayStatus,
+                razorpayUtr: utr || transaction.razorpayUtr,
+                razorpayStatusReason: statusReason || transaction.razorpayStatusReason,
+                razorpayStatusDescription: statusDescription || transaction.razorpayStatusDescription
+            }
+        });
+    }
+    // Save webhook event to prevent duplicate processing
+    if (eventId) {
+        await prisma_1.prisma.razorpayWebhookEvent.create({
+            data: {
+                eventId,
+                eventType,
+                payoutId,
+            }
+        });
     }
     res.json({ success: true });
 }

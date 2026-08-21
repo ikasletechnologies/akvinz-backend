@@ -3,10 +3,12 @@ import jwt from "jsonwebtoken";
 import { prisma } from "../config/prisma";
 import { env } from "../config/env";
 import { razorpay } from "../config/razorpay";
+import { twilioClient } from "../config/twilio";
 import { processRenewals } from "../services/billing.service";
 import { markPaymentLinkPaid } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
 import { createInvoice } from "../services/invoice.service";
+import { refundSecurityDeposit, refundPlanChangeDeposit } from "../services/refund.service";
 import { securityDepositAmount } from "../utils/planPricing";
 import { createAutopaySubscription } from "../services/autopay.service";
 import { buildFileUrl } from "../utils/fileUrl";
@@ -136,8 +138,8 @@ export async function getStats(req: Request, res: Response): Promise<any> {
         rentalDue,
         returnsInitiated,
         customersRefunded: refundedInvoices.length,
-        rentalRevenue: rentalRevenueAgg._sum.amount || 0,
-        totalDeposits: totalDepositsAgg._sum.amount || 0,
+        rentalRevenue: Number(rentalRevenueAgg._sum.amount) || 0,
+        totalDeposits: Number(totalDepositsAgg._sum.amount) || 0,
         assetsReceived
       }
     });
@@ -320,14 +322,28 @@ export async function uploadCustomerDocuments(req: Request, res: Response): Prom
       return res.status(400).json({ success: false, message: "No file uploaded" });
     }
 
+    const customerId = req.params.id as string;
+    const existingCustomer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!existingCustomer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
     const data: Record<string, string> = {};
     for (const [uploadField, dbField] of Object.entries(DOCUMENT_UPLOAD_FIELDS)) {
       const url = buildFileUrl(files, uploadField);
       if (url) data[dbField] = url;
     }
 
+    // Exclusivity check: reject manual proof if Razorpay refund has been initiated
+    if (data.planChangeRefundProofUrl && (existingCustomer.planChangeRazorpayRefundId || existingCustomer.planChangeRefundStatus === "REFUND_SUCCESS" || existingCustomer.planChangeRefundStatus === "REFUND_PROCESSING")) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot upload manual proof because a Razorpay refund has already been initiated/processed."
+      });
+    }
+
     const customer = await prisma.customer.update({
-      where: { id: req.params.id as string },
+      where: { id: customerId },
       data
     });
 
@@ -368,6 +384,42 @@ export async function getCustomer(req: Request, res: Response): Promise<any> {
       return res.status(404).json({ success: false, message: "Customer not found" });
     }
     res.json({ success: true, customer });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+// Looks up a customer's UPI VPA from their original security-deposit
+// payment on demand, for customers who registered before customerUpiVpa
+// started being captured automatically (registration.service.ts) — every
+// customer already has razorpayPaymentId on file regardless of when they
+// registered, so this works retroactively. Only returns something if that
+// original payment was actually made via UPI; caches a hit back onto the
+// customer so future lookups (and other admins) skip the Razorpay call.
+export async function getCustomerUpiVpa(req: Request, res: Response): Promise<any> {
+  try {
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+    if (customer.customerUpiVpa) {
+      return res.json({ success: true, upiVpa: customer.customerUpiVpa });
+    }
+    if (!customer.razorpayPaymentId) {
+      return res.json({ success: true, upiVpa: null });
+    }
+
+    try {
+      const payment = await razorpay.payments.fetch(customer.razorpayPaymentId);
+      const upiVpa = payment.method === "upi" && typeof (payment as any).vpa === "string" ? (payment as any).vpa : null;
+      if (upiVpa) {
+        await prisma.customer.update({ where: { id: customer.id }, data: { customerUpiVpa: upiVpa } });
+      }
+      res.json({ success: true, upiVpa });
+    } catch {
+      // Old/archived payment, API hiccup, etc. — not fatal, admin can still type it in.
+      res.json({ success: true, upiVpa: null });
+    }
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -451,6 +503,17 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
     const planChangeTargetDuration = Number(req.body.planChangeTargetDuration);
     const hasPlanChangeTarget = planChangeTargetDuration === 12 || planChangeTargetDuration === 24;
 
+    // The plan-change top-up link is self-explanatory and generated
+    // programmatically, so it gets a fixed reason instead of asking the
+    // admin to type one; every other "Collect From Customer" link requires
+    // an explicit reason.
+    const reason = hasPlanChangeTarget
+      ? `Plan change top-up (${planChangeTargetDuration} months)`
+      : typeof req.body.reason === "string" ? req.body.reason.trim() : "";
+    if (!reason) {
+      return res.status(400).json({ success: false, message: "A reason is required" });
+    }
+
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
     if (!customer) {
       return res.status(404).json({ success: false, message: "Customer not found" });
@@ -478,6 +541,7 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
       data: {
         customerId: customer.id,
         amount,
+        reason,
         razorpayPaymentLinkId: paymentLink.id,
         shortUrl: paymentLink.short_url,
         expireBy: new Date((paymentLink.expire_by as number) * 1000),
@@ -521,7 +585,9 @@ export async function listCustomerPaymentLinks(req: Request, res: Response): Pro
       where: { customerId: req.params.id as string },
       orderBy: { createdAt: "desc" }
     });
-    res.json({ success: true, paymentLinks });
+    // amount is a Prisma Decimal — JSON.stringify would otherwise serialize
+    // it as a string (e.g. "3.50") instead of a number.
+    res.json({ success: true, paymentLinks: paymentLinks.map((p) => ({ ...p, amount: Number(p.amount) })) });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -585,6 +651,40 @@ export async function listCustomerPayouts(req: Request, res: Response): Promise<
   }
 }
 
+// Admin-triggered equivalent of the customer confirming on /closeForm —
+// refunds the security deposit via Razorpay immediately instead of waiting
+// on the customer to accept the fixed amount themselves.
+export async function refundNow(req: Request, res: Response): Promise<any> {
+  try {
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    if (customer.paymentStatus !== "PENDING_REFUND") {
+      return res.status(400).json({ success: false, message: "No pending refund found for this account" });
+    }
+    if (customer.refundAmount === null) {
+      return res.status(400).json({ success: false, message: "Refund amount has not been finalized yet" });
+    }
+
+    const { invoice } = await refundSecurityDeposit(
+      customer.id,
+      customer.refundAmount,
+      "Refund of security deposit following product return (admin-initiated)"
+    );
+
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: { paymentStatus: "REFUNDED" }
+    });
+
+    res.json({ success: true, customer: updated, invoiceId: invoice.id });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.error?.description || error.message });
+  }
+}
+
 // Fallback for when the Razorpay webhook hasn't fired (e.g. local dev, where
 // Razorpay can't reach localhost) or is delayed — admin confirms payment
 // after checking the Razorpay dashboard themselves.
@@ -618,11 +718,32 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
     }
 
     const difference = securityDepositAmount(newPlanDuration) - securityDepositAmount(customer.planDuration);
-    if (difference < 0 && !customer.planChangeRefundProofUrl) {
-      return res.status(400).json({
-        success: false,
-        message: "Upload proof that the deposit refund was sent to the customer before confirming this downgrade."
-      });
+    if (difference < 0) {
+      if (!customer.planChangeRefundProofUrl && customer.planChangeRefundStatus !== "REFUND_SUCCESS" && !customer.planChangeRazorpayRefundId) {
+        return res.status(400).json({
+          success: false,
+          message: "Refund the deposit via Razorpay, or upload proof it was sent, before confirming this downgrade."
+        });
+      }
+      
+      // Verify Razorpay refund state if it exists
+      if (customer.planChangeRazorpayRefundId) {
+        try {
+          const refundObj = await razorpay.refunds.fetch(customer.planChangeRazorpayRefundId);
+          if (refundObj.status === "failed") {
+            return res.status(400).json({
+              success: false,
+              message: "The Razorpay refund failed. Please retry the refund or settle manually."
+            });
+          }
+        } catch (err: any) {
+          // If we fail to fetch (e.g. network issue), reject to prevent applying unpaid plan
+          return res.status(400).json({
+            success: false,
+            message: `Could not verify Razorpay refund status: ${err.message}`
+          });
+        }
+      }
     }
     if (difference > 0) {
       const paidTopUpLink = await prisma.paymentLinkRequest.findFirst({
@@ -641,7 +762,11 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
       customerId,
       newPlanDuration,
       amountHandled: Number.isFinite(requestedAmount) && requestedAmount >= 0 ? requestedAmount : undefined,
-      paymentMethod: "Manual"
+      // A Razorpay auto-refund (see refundPlanChangeViaRazorpay below)
+      // already has a real transaction id to attribute this receipt to;
+      // otherwise it's the admin's manual proof-upload path.
+      paymentMethod: customer.planChangeRazorpayRefundId ? "Razorpay" : "Manual",
+      transactionId: customer.planChangeRazorpayRefundId
     });
 
     if (result.status === "not_found") {
@@ -652,6 +777,608 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
     }
 
     res.json({ success: true, customer: result.customer, invoice: result.invoice, difference: result.difference, recordedAmount: result.recordedAmount });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+// Issues the deposit-difference refund for a plan downgrade directly
+// through Razorpay, against the customer's original deposit payment —
+// instead of the admin having to pay them some other way and upload proof.
+// Only records the Razorpay refund id here; the actual receipt is created
+// once "Confirm & Apply Plan Change" runs (see changePlan above), so this
+// alone doesn't change the customer's plan yet.
+export async function refundPlanChangeViaRazorpay(req: Request, res: Response): Promise<any> {
+  try {
+    const amount = Number(req.body.amount);
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, message: "A valid amount is required" });
+    }
+
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    // Exclusivity check: reject Razorpay refund if manual proof exists
+    if (customer.planChangeRefundProofUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot refund via Razorpay because a manual refund proof has already been uploaded."
+      });
+    }
+
+    // Idempotency check: if Razorpay refund was already created/initiated, return it
+    if (customer.planChangeRazorpayRefundId) {
+      try {
+        const existingRefund = await razorpay.refunds.fetch(customer.planChangeRazorpayRefundId);
+        return res.json({ success: true, customer, refund: existingRefund });
+      } catch {
+        return res.json({
+          success: true,
+          customer,
+          refund: { id: customer.planChangeRazorpayRefundId, status: "processed" }
+        });
+      }
+    }
+
+    const refund = await refundPlanChangeDeposit(customer.id, amount);
+
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: { planChangeRazorpayRefundId: refund.id }
+    });
+
+    res.json({ success: true, customer: updated, refund });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.error?.description || error.message });
+  }
+}
+
+export async function requestRefundOtp(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    // Exclusivity: reject if manual refund proof has been uploaded
+    if (customer.planChangeRefundProofUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot refund via Razorpay because a manual refund proof has already been uploaded."
+      });
+    }
+
+    // Check existing status
+    if (customer.planChangeRefundStatus === "REFUND_SUCCESS" || customer.planChangeRazorpayRefundId) {
+      return res.status(400).json({
+        success: false,
+        message: "Refund has already been successfully processed."
+      });
+    }
+    if (customer.planChangeRefundStatus === "REFUND_PROCESSING") {
+      return res.status(400).json({
+        success: false,
+        message: "A refund is currently processing for this customer."
+      });
+    }
+
+    // Calculate required refund amount (original plan deposit - new plan deposit)
+    const newPlanDuration = Number(req.body.newPlanDuration);
+    if (newPlanDuration !== 12 && newPlanDuration !== 24) {
+      return res.status(400).json({ success: false, message: "Plan must be 12 or 24 months" });
+    }
+    const difference = securityDepositAmount(newPlanDuration) - securityDepositAmount(customer.planDuration);
+    if (difference >= 0) {
+      return res.status(400).json({ success: false, message: "This operation is only for plan downgrades (refunds)." });
+    }
+    const refundAmount = Math.abs(difference);
+
+    // Call Twilio Verify API to send OTP
+    const verification = await twilioClient.verify.v2
+      .services(env.twilio.verifyServiceSid)
+      .verifications.create({
+        to: env.admin.mobile,
+        channel: "sms",
+      });
+
+    // Save status and calculated amount in the database
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        planChangeRefundStatus: "OTP_PENDING",
+        planChangeRefundAmount: refundAmount,
+      }
+    });
+
+    // Derive masked mobile number from env.admin.mobile (e.g. "••••3210")
+    const rawMobile = env.admin.mobile;
+    const maskedMobile = `••••${rawMobile.slice(-4)}`;
+
+    res.json({
+      success: true,
+      maskedMobile,
+      expiresIn: 300,
+      customer: updated
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function verifyRefundOtpAndExecute(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ success: false, message: "OTP code is required" });
+    }
+
+    // Twilio Verification Check
+    const verificationCheck = await twilioClient.verify.v2
+      .services(env.twilio.verifyServiceSid)
+      .verificationChecks.create({
+        to: env.admin.mobile,
+        code,
+      });
+
+    if (verificationCheck.status !== "approved") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid verification code. Please try again."
+      });
+    }
+
+    // Re-fetch customer
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    // Check database state hasn't changed
+    if (customer.planChangeRefundStatus !== "OTP_PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired OTP context."
+      });
+    }
+    if (!customer.planChangeRefundAmount || customer.planChangeRefundAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid refund amount has been calculated."
+      });
+    }
+
+    // Exclusivity: reject if manual refund proof has been uploaded
+    if (customer.planChangeRefundProofUrl) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot refund via Razorpay because a manual refund proof has already been uploaded."
+      });
+    }
+
+    // Set state to REFUND_PROCESSING to lock concurrent updates
+    let updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: { planChangeRefundStatus: "REFUND_PROCESSING" }
+    });
+
+    try {
+      // Execute Razorpay refund
+      const refund = await refundPlanChangeDeposit(customer.id, customer.planChangeRefundAmount);
+
+      // Set state to REFUND_SUCCESS
+      updated = await prisma.customer.update({
+        where: { id: customer.id },
+        data: {
+          planChangeRefundStatus: "REFUND_SUCCESS",
+          planChangeRazorpayRefundId: refund.id
+        }
+      });
+
+      res.json({ success: true, customer: updated, refund });
+    } catch (refundError: any) {
+      // If refund failed, revert to REFUND_FAILED
+      updated = await prisma.customer.update({
+        where: { id: customer.id },
+        data: { planChangeRefundStatus: "REFUND_FAILED" }
+      });
+      res.status(500).json({
+        success: false,
+        message: refundError.error?.description || refundError.message,
+        customer: updated
+      });
+    }
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function cancelRefundOtp(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    if (customer.planChangeRefundStatus === "REFUND_PROCESSING" || customer.planChangeRefundStatus === "REFUND_SUCCESS") {
+      return res.status(400).json({ success: false, message: "Cannot cancel a refund that is processing or succeeded." });
+    }
+
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        planChangeRefundStatus: "NOT_STARTED",
+        planChangeRefundAmount: null
+      }
+    });
+
+    res.json({ success: true, customer: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+// A UPI VPA is "<handle>@<psp bank/app name>" — e.g. name@okhdfcbank, 9999999999@ybl.
+const VPA_PATTERN = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
+
+export async function requestPayoutOtp(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    const amountPaise = Number(req.body.amountPaise);
+    const { reason } = req.body;
+    // "bank" (default, backward-compatible) pays into the customer's saved
+    // bank details; "upi" pays a UPI ID the admin types in for this payout,
+    // so a payment doesn't have to wait on the customer submitting bank
+    // details first.
+    const payoutMethod = req.body.payoutMethod === "upi" ? "upi" : "bank";
+
+    if (!amountPaise || amountPaise <= 0) {
+      return res.status(400).json({ success: false, message: "Valid amount in paise is required" });
+    }
+    if (!reason) {
+      return res.status(400).json({ success: false, message: "Reason is required" });
+    }
+
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    let recipientNameSnapshot: string;
+    let recipientIdentifierSnapshot: string;
+    let payoutDestinationType: string;
+    let payoutVpa: string | null = null;
+
+    if (payoutMethod === "upi") {
+      const upiId = typeof req.body.upiId === "string" ? req.body.upiId.trim() : "";
+      if (!VPA_PATTERN.test(upiId)) {
+        return res.status(400).json({ success: false, message: "Enter a valid UPI ID (e.g. name@bank)" });
+      }
+      payoutDestinationType = "VPA";
+      payoutVpa = upiId;
+      recipientNameSnapshot = customer.fullName;
+      recipientIdentifierSnapshot = upiId;
+    } else {
+      // Verify recipient details are present
+      const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
+      const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
+      const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
+
+      if (!bankAccountNumber || !bankIfscCode || !bankAccountHolderName) {
+        return res.status(400).json({
+          success: false,
+          message: "Customer bank account details (account number, IFSC, name) must be saved first."
+        });
+      }
+
+      // Mask bank account number for safety snapshot
+      const maskedAccount = `••••${bankAccountNumber.slice(-4)}`;
+      payoutDestinationType = "BANK_ACCOUNT";
+      recipientNameSnapshot = bankAccountHolderName;
+      recipientIdentifierSnapshot = `${customer.bankName || customer.refundBankName || "Bank"} (${maskedAccount})`;
+    }
+
+    // Generate unique idempotency key
+    const idempotencyKey = crypto.randomUUID();
+
+    // Call Twilio Verify API to send OTP
+    const verification = await twilioClient.verify.v2
+      .services(env.twilio.verifyServiceSid)
+      .verifications.create({
+        to: env.admin.mobile,
+        channel: "sms",
+      });
+
+    // Create MoneyTransaction record in DRAFT/OTP_PENDING status
+    const otpChallengeId = verification.sid;
+    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    const transaction = await prisma.moneyTransaction.create({
+      data: {
+        customerId: customer.id,
+        direction: "PAY_TO_CUSTOMER",
+        amountPaise,
+        reason,
+        method: "RAZORPAY_PAYOUT",
+        status: "OTP_PENDING",
+        recipientNameSnapshot,
+        recipientIdentifierSnapshot,
+        payoutDestinationType,
+        payoutVpa,
+        idempotencyKey,
+        otpChallengeId,
+        otpExpiresAt,
+        createdBy: env.admin.email,
+      }
+    });
+
+    const rawMobile = env.admin.mobile;
+    const maskedMobile = `••••${rawMobile.slice(-4)}`;
+
+    res.json({
+      success: true,
+      transactionId: transaction.id,
+      maskedMobile,
+      expiresIn: 300,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function verifyPayoutOtpAndExecute(req: Request, res: Response): Promise<any> {
+  try {
+    const { transactionId, code } = req.body;
+    if (!transactionId || !code) {
+      return res.status(400).json({ success: false, message: "Transaction ID and OTP code are required" });
+    }
+
+    // Fetch the transaction
+    const transaction = await prisma.moneyTransaction.findUnique({
+      where: { id: transactionId },
+      include: { customer: true }
+    });
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    if (!env.razorpay.accountNumberX) {
+      return res.status(503).json({ success: false, message: "RazorpayX payouts are not configured on this server" });
+    }
+
+    if (transaction.status !== "OTP_PENDING") {
+      return res.status(400).json({ success: false, message: "Transaction is not in OTP_PENDING status" });
+    }
+
+    if (transaction.otpExpiresAt && transaction.otpExpiresAt < new Date()) {
+      return res.status(400).json({ success: false, message: "OTP has expired" });
+    }
+
+    // Verify OTP via Twilio
+    const verificationCheck = await twilioClient.verify.v2
+      .services(env.twilio.verifyServiceSid)
+      .verificationChecks.create({
+        to: env.admin.mobile,
+        code,
+      });
+
+    if (verificationCheck.status !== "approved") {
+      await prisma.moneyTransaction.update({
+        where: { id: transactionId },
+        data: { otpAttempts: { increment: 1 } }
+      });
+      return res.status(400).json({ success: false, message: "Invalid OTP code" });
+    }
+
+    // Transition state to PROCESSING to lock transaction
+    await prisma.moneyTransaction.update({
+      where: { id: transactionId },
+      data: { status: "PROCESSING" }
+    });
+
+    const customer = transaction.customer;
+    let contactId = customer.razorpayXContactId;
+    let fundAccountId = customer.razorpayXFundAccountId;
+
+    const basicAuth = Buffer.from(`${env.razorpay.keyId}:${env.razorpay.keySecret}`).toString("base64");
+
+    // 1. Create contact if not exists
+    if (!contactId) {
+      const contactRes = await fetch("https://api.razorpay.com/v1/contacts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Basic ${basicAuth}`
+        },
+        body: JSON.stringify({
+          name: customer.fullName,
+          email: customer.email,
+          contact: customer.mobileNumber,
+          type: "customer",
+          reference_id: customer.id
+        })
+      });
+      const contactData: any = await contactRes.json();
+      if (!contactRes.ok) {
+        throw new Error(contactData.error?.description || "Failed to create RazorpayX Contact");
+      }
+      contactId = contactData.id;
+      await prisma.customer.update({
+        where: { id: customer.id },
+        data: { razorpayXContactId: contactId }
+      });
+    }
+
+    // 2. Create fund account if not exists.
+    // UPI payouts always create a fresh fund account for the VPA the admin
+    // typed in for this specific transaction — it isn't cached on the
+    // customer, since (unlike bank details) it isn't a stored profile field
+    // and could be different on the next payout.
+    if (transaction.payoutDestinationType === "VPA" && transaction.payoutVpa) {
+      const faRes = await fetch("https://api.razorpay.com/v1/fund_accounts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Basic ${basicAuth}`
+        },
+        body: JSON.stringify({
+          contact_id: contactId,
+          account_type: "vpa",
+          vpa: { address: transaction.payoutVpa }
+        })
+      });
+      const faData: any = await faRes.json();
+      if (!faRes.ok) {
+        throw new Error(faData.error?.description || "Failed to create RazorpayX Fund Account");
+      }
+      fundAccountId = faData.id;
+    } else if (!fundAccountId) {
+      const bankAccountNumber = customer.bankAccountNumber || customer.refundBankAccountNumber;
+      const bankIfscCode = customer.bankIfscCode || customer.refundBankIfscCode;
+      const bankAccountHolderName = customer.bankAccountHolderName || customer.refundBankAccountHolderName;
+
+      const faRes = await fetch("https://api.razorpay.com/v1/fund_accounts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Basic ${basicAuth}`
+        },
+        body: JSON.stringify({
+          contact_id: contactId,
+          account_type: "bank_account",
+          bank_account: {
+            name: bankAccountHolderName,
+            ifsc: bankIfscCode,
+            account_number: bankAccountNumber
+          }
+        })
+      });
+      const faData: any = await faRes.json();
+      if (!faRes.ok) {
+        throw new Error(faData.error?.description || "Failed to create RazorpayX Fund Account");
+      }
+      fundAccountId = faData.id;
+      await prisma.customer.update({
+        where: { id: customer.id },
+        data: { razorpayXFundAccountId: fundAccountId }
+      });
+    }
+
+    // 3. Create payout
+    const payoutRes = await fetch("https://api.razorpay.com/v1/payouts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Basic ${basicAuth}`,
+        "X-Payout-Idempotency": transaction.idempotencyKey
+      },
+      body: JSON.stringify({
+        account_number: env.razorpay.accountNumberX,
+        fund_account_id: fundAccountId,
+        amount: transaction.amountPaise,
+        currency: "INR",
+        // Razorpay requires the payout mode to match the fund account type —
+        // UPI for a vpa fund account, IMPS for a bank_account one.
+        mode: transaction.payoutDestinationType === "VPA" ? "UPI" : "IMPS",
+        purpose: "refund",
+        narration: transaction.reason.substring(0, 30),
+        reference_id: transaction.id
+      })
+    });
+
+    const payoutData: any = await payoutRes.json();
+    if (!payoutRes.ok) {
+      const updatedTx = await prisma.moneyTransaction.update({
+        where: { id: transactionId },
+        data: {
+          status: "FAILED",
+          razorpayStatusReason: payoutData.error?.description || "Payout creation failed",
+        }
+      });
+      return res.status(400).json({
+        success: false,
+        message: payoutData.error?.description || "Failed to create RazorpayX Payout",
+        transaction: updatedTx
+      });
+    }
+
+    let initialStatus = "PROCESSING";
+    const rpStatus = payoutData.status;
+    if (rpStatus === "queued") {
+      initialStatus = "QUEUED";
+    } else if (rpStatus === "pending") {
+      initialStatus = "PENDING";
+    } else if (rpStatus === "rejected") {
+      initialStatus = "REJECTED";
+    } else if (rpStatus === "processed") {
+      initialStatus = "SUCCESS";
+    } else if (rpStatus === "reversed") {
+      initialStatus = "REVERSED";
+    } else if (rpStatus === "failed") {
+      initialStatus = "FAILED";
+    }
+
+    const finalTx = await prisma.moneyTransaction.update({
+      where: { id: transactionId },
+      data: {
+        status: initialStatus,
+        razorpayPayoutId: payoutData.id,
+        razorpayPayoutStatus: rpStatus,
+        razorpayUtr: payoutData.utr || null,
+        razorpayStatusReason: payoutData.status_details?.reason || null,
+        razorpayStatusDescription: payoutData.status_details?.description || null,
+      }
+    });
+
+    res.json({ success: true, transaction: finalTx });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function cancelPayout(req: Request, res: Response): Promise<any> {
+  try {
+    const { transactionId } = req.body;
+    if (!transactionId) {
+      return res.status(400).json({ success: false, message: "Transaction ID is required" });
+    }
+
+    const transaction = await prisma.moneyTransaction.findUnique({
+      where: { id: transactionId }
+    });
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    if (transaction.status !== "DRAFT" && transaction.status !== "OTP_PENDING") {
+      return res.status(400).json({ success: false, message: "Cannot cancel transaction in current status." });
+    }
+
+    const updated = await prisma.moneyTransaction.update({
+      where: { id: transactionId },
+      data: { status: "CANCELLED" }
+    });
+
+    res.json({ success: true, transaction: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function getCustomerMoneyTransactions(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    const transactions = await prisma.moneyTransaction.findMany({
+      where: { customerId },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json({ success: true, transactions });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
