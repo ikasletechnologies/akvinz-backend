@@ -17,6 +17,7 @@ exports.updateCustomer = updateCustomer;
 exports.deleteCustomer = deleteCustomer;
 exports.createPaymentLink = createPaymentLink;
 exports.listCustomerPaymentLinks = listCustomerPaymentLinks;
+exports.syncCustomerPaymentLinksEndpoint = syncCustomerPaymentLinksEndpoint;
 exports.createPayout = createPayout;
 exports.listCustomerPayouts = listCustomerPayouts;
 exports.refundNow = refundNow;
@@ -113,10 +114,10 @@ async function getStats(req, res) {
         // whole condition. Deliberately NOT keyed off subscriptionStatus or
         // Invoice rows: subscriptionStatus flips to CANCELLED the moment a
         // return is *requested*, well before any refund happens, so it can't
-        // tell an in-progress return apart from a completed one; and a
-        // manually/offline-created customer (admin.controller.createCustomer)
-        // never gets a SECURITY_DEPOSIT invoice at all, so relying on Invoice
-        // rows silently excluded them.
+        // tell an in-progress return apart from a completed one; and customers
+        // created before createCustomer started generating a SECURITY_DEPOSIT
+        // invoice for offline signups have no Invoice row at all, so relying on
+        // Invoice rows would silently exclude them.
         const subscriberWhere = { paymentStatus: { not: "REFUNDED" } };
         const [totalCustomers, totalSubscribers, twelveMonthCustomers, twentyFourMonthCustomers, rentalPaidInvoices, rentalDue, returnsInitiated, refundedInvoices, rentalRevenueAgg, totalDepositsAgg, assetsReceived] = await Promise.all([
             prisma_1.prisma.customer.count({ where: { createdAt: range } }),
@@ -261,11 +262,12 @@ async function deleteDraft(req, res) {
 // the UI.
 async function createCustomer(req, res) {
     try {
-        const { fullName, mobileNumber, email, addressLine1, addressLine2, city, state, pincode, planDuration, houseType } = req.body;
+        const { fullName, mobileNumber, email, addressLine1, addressLine2, city, state, pincode, planDuration, houseType, depositPaymentMethod, depositTransactionId } = req.body;
         if (!fullName || !mobileNumber || !email || !addressLine1 || !city || !state || !pincode || !planDuration || !houseType) {
             return res.status(400).json({ success: false, message: "Please fill in all required fields." });
         }
         const files = req.files;
+        const parsedPlanDuration = parseInt(planDuration);
         const customer = await prisma_1.prisma.customer.create({
             data: {
                 fullName,
@@ -276,7 +278,7 @@ async function createCustomer(req, res) {
                 city,
                 state,
                 pincode,
-                planDuration: parseInt(planDuration),
+                planDuration: parsedPlanDuration,
                 houseType,
                 paymentStatus: "COMPLETED",
                 aadharFrontImageUrl: files ? (0, fileUrl_1.buildFileUrl)(files, "aadharFrontFile") : null,
@@ -286,7 +288,20 @@ async function createCustomer(req, res) {
                 residenceDocUrl: files ? (0, fileUrl_1.buildFileUrl)(files, "residenceFile") : null
             }
         });
-        res.json({ success: true, customer });
+        // paymentStatus is set to COMPLETED above (the admin is recording a
+        // deposit already collected offline), so a matching SECURITY_DEPOSIT
+        // invoice must be created here too — otherwise this customer would have
+        // no receipt at all, unlike the online Razorpay flow (registration.service).
+        const invoice = await (0, invoice_service_1.createInvoice)({
+            type: "SECURITY_DEPOSIT",
+            customerId: customer.id,
+            productType: "Refundable Security Deposit",
+            amount: (0, planPricing_1.securityDepositAmount)(parsedPlanDuration),
+            paymentMethod: depositPaymentMethod || "Cash",
+            transactionId: depositTransactionId || null,
+            status: "FUNDED"
+        });
+        res.json({ success: true, customer, invoiceId: invoice.id });
     }
     catch (error) {
         if (error.code === "P2002") {
@@ -368,7 +383,9 @@ async function deleteCustomerDocument(req, res) {
 }
 async function getCustomer(req, res) {
     try {
-        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
+        const customerId = req.params.id;
+        await (0, paymentLink_service_1.syncCustomerPaymentLinks)(customerId);
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
         if (!customer) {
             return res.status(404).json({ success: false, message: "Customer not found" });
         }
@@ -565,13 +582,34 @@ async function createPaymentLink(req, res) {
 // that process, it does not activate anything itself.
 async function listCustomerPaymentLinks(req, res) {
     try {
+        const customerId = req.params.id;
+        await (0, paymentLink_service_1.syncCustomerPaymentLinks)(customerId);
         const paymentLinks = await prisma_1.prisma.paymentLinkRequest.findMany({
-            where: { customerId: req.params.id },
+            where: { customerId },
             orderBy: { createdAt: "desc" }
         });
         // amount is a Prisma Decimal — JSON.stringify would otherwise serialize
         // it as a string (e.g. "3.50") instead of a number.
         res.json({ success: true, paymentLinks: paymentLinks.map((p) => ({ ...p, amount: Number(p.amount) })) });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+}
+async function syncCustomerPaymentLinksEndpoint(req, res) {
+    try {
+        const customerId = req.params.id;
+        await (0, paymentLink_service_1.syncCustomerPaymentLinks)(customerId);
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
+        const paymentLinks = await prisma_1.prisma.paymentLinkRequest.findMany({
+            where: { customerId },
+            orderBy: { createdAt: "desc" }
+        });
+        res.json({
+            success: true,
+            customer,
+            paymentLinks: paymentLinks.map((p) => ({ ...p, amount: Number(p.amount) }))
+        });
     }
     catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -666,7 +704,8 @@ async function markPaymentLinkAsPaid(req, res) {
         if (!updated) {
             return res.status(404).json({ success: false, message: "Payment link not found" });
         }
-        res.json({ success: true, paymentLink: updated });
+        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: updated.customerId } });
+        res.json({ success: true, paymentLink: updated, customer });
     }
     catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -683,6 +722,7 @@ async function changePlan(req, res) {
             return res.status(400).json({ success: false, message: "Plan must be 12 or 24 months" });
         }
         const customerId = req.params.id;
+        await (0, paymentLink_service_1.syncCustomerPaymentLinks)(customerId);
         const customer = await prisma_1.prisma.customer.findUnique({ where: { id: customerId } });
         if (!customer) {
             return res.status(404).json({ success: false, message: "Customer not found" });

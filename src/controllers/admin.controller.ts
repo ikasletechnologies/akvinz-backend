@@ -5,7 +5,7 @@ import { env } from "../config/env";
 import { razorpay } from "../config/razorpay";
 import { twilioClient } from "../config/twilio";
 import { processRenewals } from "../services/billing.service";
-import { markPaymentLinkPaid } from "../services/paymentLink.service";
+import { markPaymentLinkPaid, syncCustomerPaymentLinks } from "../services/paymentLink.service";
 import { applyPlanChange } from "../services/planChange.service";
 import { createInvoice } from "../services/invoice.service";
 import { refundSecurityDeposit, refundPlanChangeDeposit } from "../services/refund.service";
@@ -394,7 +394,9 @@ export async function deleteCustomerDocument(req: Request, res: Response): Promi
 
 export async function getCustomer(req: Request, res: Response): Promise<any> {
   try {
-    const customer = await prisma.customer.findUnique({ where: { id: req.params.id as string } });
+    const customerId = req.params.id as string;
+    await syncCustomerPaymentLinks(customerId);
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
     if (!customer) {
       return res.status(404).json({ success: false, message: "Customer not found" });
     }
@@ -592,13 +594,34 @@ export async function createPaymentLink(req: Request, res: Response): Promise<an
 // that process, it does not activate anything itself.
 export async function listCustomerPaymentLinks(req: Request, res: Response): Promise<any> {
   try {
+    const customerId = req.params.id as string;
+    await syncCustomerPaymentLinks(customerId);
     const paymentLinks = await prisma.paymentLinkRequest.findMany({
-      where: { customerId: req.params.id as string },
+      where: { customerId },
       orderBy: { createdAt: "desc" }
     });
     // amount is a Prisma Decimal — JSON.stringify would otherwise serialize
     // it as a string (e.g. "3.50") instead of a number.
     res.json({ success: true, paymentLinks: paymentLinks.map((p) => ({ ...p, amount: Number(p.amount) })) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function syncCustomerPaymentLinksEndpoint(req: Request, res: Response): Promise<any> {
+  try {
+    const customerId = req.params.id as string;
+    await syncCustomerPaymentLinks(customerId);
+    const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+    const paymentLinks = await prisma.paymentLinkRequest.findMany({
+      where: { customerId },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json({
+      success: true,
+      customer,
+      paymentLinks: paymentLinks.map((p) => ({ ...p, amount: Number(p.amount) }))
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -706,7 +729,8 @@ export async function markPaymentLinkAsPaid(req: Request, res: Response): Promis
     if (!updated) {
       return res.status(404).json({ success: false, message: "Payment link not found" });
     }
-    res.json({ success: true, paymentLink: updated });
+    const customer = await prisma.customer.findUnique({ where: { id: updated.customerId } });
+    res.json({ success: true, paymentLink: updated, customer });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -724,6 +748,8 @@ export async function changePlan(req: Request, res: Response): Promise<any> {
     }
 
     const customerId = req.params.id as string;
+    await syncCustomerPaymentLinks(customerId);
+
     const customer = await prisma.customer.findUnique({ where: { id: customerId } });
     if (!customer) {
       return res.status(404).json({ success: false, message: "Customer not found" });
