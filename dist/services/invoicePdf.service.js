@@ -120,6 +120,14 @@ function formatDate(date) {
         timeZone: "Asia/Kolkata"
     });
 }
+function formatDateOnly(date) {
+    return date.toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        timeZone: "Asia/Kolkata"
+    });
+}
 async function renderInvoicePdf(invoice, customer) {
     const logoPng = await getLogoPng();
     const doc = new pdfkit_1.default({ size: "A4", margin: 50 });
@@ -164,9 +172,9 @@ async function renderInvoicePdf(invoice, customer) {
     field(leftX, y, "Payment Date", formatDate(invoice.documentDate), 280);
     y += 32;
     if (invoice.rentStartDate && invoice.rentEndDate) {
-        field(leftX, y, "Rent Start", formatDate(invoice.rentStartDate), 280);
+        field(leftX, y, "Rent Start", formatDateOnly(invoice.rentStartDate), 280);
         y += 32;
-        field(leftX, y, "Rent End", formatDate(invoice.rentEndDate), 280);
+        field(leftX, y, "Rent End", formatDateOnly(invoice.rentEndDate), 280);
         y += 32;
     }
     field(leftX, y, "Payment method", invoice.paymentMethod, 280);

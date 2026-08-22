@@ -7,10 +7,10 @@ const prisma_1 = require("../config/prisma");
 const razorpay_1 = require("../config/razorpay");
 const invoice_service_1 = require("./invoice.service");
 const billing_1 = require("../utils/billing");
-// Used by the one-time monthly rent payment (verifyRentalPayment) — marks
-// the subscription active/current and records one RENTAL invoice. Autopay's
-// own recurring charges are handled independently by the
-// subscription.charged webhook (webhook.controller.ts), not this function.
+// Used by the one-time monthly rent payment (verifyRentalPayment) and the
+// autopay recurring charges (subscription.charged webhook) — marks the
+// subscription active, extends the rental period by one month, and records one
+// RENTAL invoice.
 async function activateRentalCycle(customerId, input) {
     // Idempotent: a duplicate client call (retry, double-submit, or a race
     // between the checkout handler and a webhook) for the same Razorpay
@@ -23,35 +23,59 @@ async function activateRentalCycle(customerId, input) {
         return { customer: existingCustomer, invoice: existingInvoice };
     }
     const existingCustomer = await prisma_1.prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
-    const newStart = new Date();
-    const billingDay = newStart.getDate();
-    // The next cycle's due date (when the following payment becomes due) —
-    // used for renewal/overdue logic, e.g. 15 Aug -> 15 Sep.
-    const nextRentDueDate = (0, billing_1.calculateNextBillingDate)(newStart, billingDay, "MONTHLY");
-    // The last day THIS payment actually covers, one day before the next due
-    // date — e.g. 15 Aug -> 14 Sep — shown on the bill as rentEndDate.
-    const currentRentEndDate = new Date(nextRentDueDate);
-    currentRentEndDate.setDate(currentRentEndDate.getDate() - 1);
-    // planStartDate/planEndDate are the fixed whole 12/24-month term — set
-    // once on the customer's first-ever rent payment and never touched again
-    // by a routine renewal. A later plan upgrade/downgrade recomputes
-    // planEndDate explicitly (see planChange.service.ts), not this function.
+    const now = new Date();
     const isFirstActivation = !existingCustomer.planStartDate;
-    const planStartDate = isFirstActivation ? newStart : existingCustomer.planStartDate;
-    const planEndDate = isFirstActivation
-        ? (0, billing_1.addBillingMonths)(planStartDate, input.rentalPlanDuration, billingDay)
-        : existingCustomer.planEndDate;
+    let billingDay;
+    let planStartDate;
+    let planEndDate;
+    let cycleStartDate;
+    let cycleEndDate;
+    let nextRentDueDate;
+    let currentRentStartDate;
+    if (isFirstActivation) {
+        billingDay = now.getDate();
+        planStartDate = now;
+        planEndDate = (0, billing_1.addBillingMonths)(planStartDate, input.rentalPlanDuration, billingDay);
+        cycleStartDate = now;
+        nextRentDueDate = (0, billing_1.calculateNextBillingDate)(cycleStartDate, billingDay, "MONTHLY");
+        cycleEndDate = new Date(nextRentDueDate);
+        cycleEndDate.setDate(cycleEndDate.getDate() - 1);
+        currentRentStartDate = cycleStartDate;
+    }
+    else {
+        billingDay = existingCustomer.billingDay ?? existingCustomer.planStartDate?.getDate() ?? now.getDate();
+        planStartDate = existingCustomer.planStartDate;
+        planEndDate = existingCustomer.planEndDate;
+        currentRentStartDate = existingCustomer.currentRentStartDate ?? existingCustomer.planStartDate ?? now;
+        // For an existing active customer:
+        // If nextRentDueDate is set, the new monthly coverage begins on nextRentDueDate
+        // (i.e. the day immediately following currentRentEndDate).
+        // This allows consecutive/advance payments to sequentially extend month-by-month.
+        if (existingCustomer.nextRentDueDate) {
+            cycleStartDate = new Date(existingCustomer.nextRentDueDate);
+        }
+        else if (existingCustomer.currentRentEndDate) {
+            cycleStartDate = new Date(existingCustomer.currentRentEndDate);
+            cycleStartDate.setDate(cycleStartDate.getDate() + 1);
+        }
+        else {
+            cycleStartDate = now;
+        }
+        nextRentDueDate = (0, billing_1.calculateNextBillingDate)(cycleStartDate, billingDay, "MONTHLY");
+        cycleEndDate = new Date(nextRentDueDate);
+        cycleEndDate.setDate(cycleEndDate.getDate() - 1);
+    }
     const customer = await prisma_1.prisma.customer.update({
         where: { id: customerId },
         data: {
             rentalPlanDuration: input.rentalPlanDuration,
             rentalAmount: input.rentalAmount,
             subscriptionStatus: "ACTIVE",
-            currentRentStartDate: newStart,
-            currentRentEndDate,
+            currentRentStartDate,
+            currentRentEndDate: cycleEndDate,
             nextRentDueDate,
             billingDay,
-            lastPaymentDate: newStart,
+            lastPaymentDate: now,
             razorpayPaymentId: input.transactionId,
             ...(isFirstActivation ? { planStartDate, planEndDate } : {}),
             ...(input.orderId ? { razorpayOrderId: input.orderId } : {})
@@ -65,8 +89,8 @@ async function activateRentalCycle(customerId, input) {
         paymentMethod: input.paymentMethod,
         transactionId: input.transactionId,
         status: "FUNDED",
-        rentStartDate: newStart,
-        rentEndDate: currentRentEndDate
+        rentStartDate: cycleStartDate,
+        rentEndDate: cycleEndDate
     });
     return { customer, invoice };
 }
