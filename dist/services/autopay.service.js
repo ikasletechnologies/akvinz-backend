@@ -22,20 +22,38 @@ async function activateRentalCycle(customerId, input) {
         const existingCustomer = await prisma_1.prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
         return { customer: existingCustomer, invoice: existingInvoice };
     }
+    const existingCustomer = await prisma_1.prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
     const newStart = new Date();
     const billingDay = newStart.getDate();
-    const newEnd = (0, billing_1.calculateNextBillingDate)(newStart, billingDay, "MONTHLY");
+    // The next cycle's due date (when the following payment becomes due) —
+    // used for renewal/overdue logic, e.g. 15 Aug -> 15 Sep.
+    const nextRentDueDate = (0, billing_1.calculateNextBillingDate)(newStart, billingDay, "MONTHLY");
+    // The last day THIS payment actually covers, one day before the next due
+    // date — e.g. 15 Aug -> 14 Sep — shown on the bill as rentEndDate.
+    const currentRentEndDate = new Date(nextRentDueDate);
+    currentRentEndDate.setDate(currentRentEndDate.getDate() - 1);
+    // planStartDate/planEndDate are the fixed whole 12/24-month term — set
+    // once on the customer's first-ever rent payment and never touched again
+    // by a routine renewal. A later plan upgrade/downgrade recomputes
+    // planEndDate explicitly (see planChange.service.ts), not this function.
+    const isFirstActivation = !existingCustomer.planStartDate;
+    const planStartDate = isFirstActivation ? newStart : existingCustomer.planStartDate;
+    const planEndDate = isFirstActivation
+        ? (0, billing_1.addBillingMonths)(planStartDate, input.rentalPlanDuration, billingDay)
+        : existingCustomer.planEndDate;
     const customer = await prisma_1.prisma.customer.update({
         where: { id: customerId },
         data: {
             rentalPlanDuration: input.rentalPlanDuration,
             rentalAmount: input.rentalAmount,
             subscriptionStatus: "ACTIVE",
-            subscriptionStart: newStart,
-            subscriptionEnd: newEnd,
+            currentRentStartDate: newStart,
+            currentRentEndDate,
+            nextRentDueDate,
             billingDay,
             lastPaymentDate: newStart,
             razorpayPaymentId: input.transactionId,
+            ...(isFirstActivation ? { planStartDate, planEndDate } : {}),
             ...(input.orderId ? { razorpayOrderId: input.orderId } : {})
         }
     });
@@ -46,7 +64,9 @@ async function activateRentalCycle(customerId, input) {
         amount: input.rentalAmount,
         paymentMethod: input.paymentMethod,
         transactionId: input.transactionId,
-        status: "FUNDED"
+        status: "FUNDED",
+        rentStartDate: newStart,
+        rentEndDate: currentRentEndDate
     });
     return { customer, invoice };
 }

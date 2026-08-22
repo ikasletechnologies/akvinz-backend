@@ -7,7 +7,9 @@ exports.renderInvoicePdf = renderInvoicePdf;
 const pdfkit_1 = __importDefault(require("pdfkit"));
 const sharp_1 = __importDefault(require("sharp"));
 const path_1 = __importDefault(require("path"));
+const fs_1 = __importDefault(require("fs"));
 const company_1 = require("../config/company");
+const env_1 = require("../config/env");
 const LOGO_PATH = path_1.default.join(__dirname, "..", "assets", "logo.svg");
 let logoPngPromise = null;
 function getLogoPng() {
@@ -15,6 +17,21 @@ function getLogoPng() {
         logoPngPromise = (0, sharp_1.default)(LOGO_PATH, { density: 300 }).resize({ height: 200 }).png().toBuffer();
     }
     return logoPngPromise;
+}
+// proofUrl is stored as `${baseUrl}/uploads/{filename}` (see fileUrl.ts) —
+// read straight off disk (same process, no network hop) rather than
+// fetching it back over HTTP. Returns null if the file is missing/unreadable
+// so a broken/deleted proof photo never breaks receipt generation.
+function readProofImage(proofUrl) {
+    try {
+        const filename = proofUrl.split("/uploads/").pop();
+        if (!filename)
+            return null;
+        return fs_1.default.readFileSync(path_1.default.join(env_1.env.uploadDir, filename));
+    }
+    catch {
+        return null;
+    }
 }
 const STATUS_COLORS = {
     FUNDED: "#16a34a",
@@ -144,8 +161,14 @@ async function renderInvoicePdf(invoice, customer) {
         doc.fillColor("#111827").font("Helvetica-Bold").fontSize(9.5).text(value, x, yPos + 11, { width, align });
     };
     const leftStartY = y;
-    field(leftX, y, "Document Date", formatDate(invoice.documentDate), 280);
+    field(leftX, y, "Payment Date", formatDate(invoice.documentDate), 280);
     y += 32;
+    if (invoice.rentStartDate && invoice.rentEndDate) {
+        field(leftX, y, "Rent Start", formatDate(invoice.rentStartDate), 280);
+        y += 32;
+        field(leftX, y, "Rent End", formatDate(invoice.rentEndDate), 280);
+        y += 32;
+    }
     field(leftX, y, "Payment method", invoice.paymentMethod, 280);
     y += 32;
     field(leftX, y, "Transaction ID", invoice.transactionId || "N/A", 280);
@@ -169,6 +192,27 @@ async function renderInvoicePdf(invoice, customer) {
     // footer below it is always positioned after the real content, never
     // overlapping it regardless of how long the wrapped text runs.
     let ty = Math.max(y + 18, ry) + 16;
+    // Manual-payment proof photo (bank transfer screenshot, etc.) — only
+    // present for manually-recorded payments (createPayout). Sized via sharp's
+    // metadata first so the actual rendered height (aspect-fit, not the raw
+    // photo's arbitrary dimensions) can be accounted for in the layout below,
+    // same way every other section here measures itself before advancing ty.
+    if (invoice.proofUrl) {
+        const proofBuffer = readProofImage(invoice.proofUrl);
+        const proofMeta = proofBuffer ? await (0, sharp_1.default)(proofBuffer).metadata().catch(() => null) : null;
+        if (proofBuffer && proofMeta?.width && proofMeta?.height) {
+            doc.fillColor("#111827").font("Helvetica-Bold").fontSize(9);
+            doc.text("Payment Proof", margin, ty, { width: contentWidth });
+            ty += doc.heightOfString("Payment Proof", { width: contentWidth }) + 6;
+            const maxWidth = contentWidth;
+            const maxHeight = 200;
+            const scale = Math.min(maxWidth / proofMeta.width, maxHeight / proofMeta.height, 1);
+            const renderWidth = proofMeta.width * scale;
+            const renderHeight = proofMeta.height * scale;
+            doc.image(proofBuffer, margin, ty, { width: renderWidth, height: renderHeight });
+            ty += renderHeight + 16;
+        }
+    }
     doc.fillColor("#111827").font("Helvetica-Bold").fontSize(9);
     doc.text("Terms & Conditions", margin, ty, { width: contentWidth });
     ty += doc.heightOfString("Terms & Conditions", { width: contentWidth }) + 6;

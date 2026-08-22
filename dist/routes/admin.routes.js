@@ -35,7 +35,6 @@ router.get("/admin/drafts", requireAdmin_1.requireAdmin, admin_controller_1.list
 router.delete("/admin/drafts/:id", requireAdmin_1.requireAdmin, admin_controller_1.deleteDraft);
 router.post("/admin/process-renewals", requireAdmin_1.requireAdmin, admin_controller_1.triggerRenewals);
 router.post("/admin/customers/:id/payment-link", requireAdmin_1.requireAdmin, admin_controller_1.createPaymentLink);
-router.post("/admin/customers/:id/activate-autopay", requireAdmin_1.requireAdmin, admin_controller_1.activateAutopay);
 router.get("/admin/customers/:id/payment-links", requireAdmin_1.requireAdmin, admin_controller_1.listCustomerPaymentLinks);
 router.post("/admin/payment-links/:linkId/mark-paid", requireAdmin_1.requireAdmin, admin_controller_1.markPaymentLinkAsPaid);
 router.post("/admin/customers/:id/payout", requireAdmin_1.requireAdmin, upload_middleware_1.upload.fields([{ name: "proofFile", maxCount: 1 }]), admin_controller_1.createPayout);

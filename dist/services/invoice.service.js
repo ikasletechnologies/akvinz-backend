@@ -19,7 +19,10 @@ async function createInvoice(input) {
                 paymentMethod: input.paymentMethod,
                 transactionId: input.transactionId ?? null,
                 status: input.status,
-                reason: input.reason ?? null
+                reason: input.reason ?? null,
+                rentStartDate: input.rentStartDate ?? null,
+                rentEndDate: input.rentEndDate ?? null,
+                proofUrl: input.proofUrl ?? null
             }
         });
     });

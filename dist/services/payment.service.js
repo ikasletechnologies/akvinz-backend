@@ -4,12 +4,22 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.verifyRazorpaySignature = verifyRazorpaySignature;
+exports.verifyRazorpaySubscriptionSignature = verifyRazorpaySubscriptionSignature;
 const crypto_1 = __importDefault(require("crypto"));
 const env_1 = require("../config/env");
 function verifyRazorpaySignature(orderId, paymentId, signature) {
     const expectedSignature = crypto_1.default
         .createHmac("sha256", env_1.env.razorpay.keySecret)
         .update(`${orderId}|${paymentId}`)
+        .digest("hex");
+    return signature === expectedSignature;
+}
+// Subscription (autopay mandate) checkout uses a different signature formula
+// than one-time orders: paymentId|subscriptionId instead of orderId|paymentId.
+function verifyRazorpaySubscriptionSignature(subscriptionId, paymentId, signature) {
+    const expectedSignature = crypto_1.default
+        .createHmac("sha256", env_1.env.razorpay.keySecret)
+        .update(`${paymentId}|${subscriptionId}`)
         .digest("hex");
     return signature === expectedSignature;
 }

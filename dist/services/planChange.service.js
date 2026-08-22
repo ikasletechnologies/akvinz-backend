@@ -4,6 +4,7 @@ exports.applyPlanChange = applyPlanChange;
 const prisma_1 = require("../config/prisma");
 const invoice_service_1 = require("./invoice.service");
 const planPricing_1 = require("../utils/planPricing");
+const billing_1 = require("../utils/billing");
 // Shared by the admin's manual "Confirm & Apply Plan Change" button and the
 // automatic path (a plan-change top-up link being paid, via webhook or
 // "Mark as Paid" — see paymentLink.service.ts). Both end up here so a plan
@@ -28,12 +29,20 @@ async function applyPlanChange(input) {
     const recordedAmount = Number.isFinite(input.amountHandled) && input.amountHandled >= 0
         ? input.amountHandled
         : Math.abs(difference);
+    // planStartDate stays fixed (the term is still counted from the original
+    // rent-start date, per business rule) — only the term LENGTH changes, so
+    // planEndDate is the one thing here that needs recomputing. Nothing to
+    // recompute yet if the customer hasn't made their first rent payment.
+    const planEndDate = customer.planStartDate && customer.billingDay
+        ? (0, billing_1.addBillingMonths)(customer.planStartDate, newPlanDuration, customer.billingDay)
+        : customer.planEndDate;
     const updated = await prisma_1.prisma.customer.update({
         where: { id: customer.id },
         data: {
             planDuration: newPlanDuration,
             rentalPlanDuration: newPlanDuration,
             rentalAmount: (0, planPricing_1.rentalAmountForPlan)(newPlanDuration),
+            planEndDate,
             // One-time proof for this specific downgrade — clear both so the next
             // downgrade can't be confirmed off a stale upload or refund id.
             planChangeRefundProofUrl: null,

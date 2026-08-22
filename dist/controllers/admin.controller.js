@@ -16,7 +16,6 @@ exports.getCustomerUpiVpa = getCustomerUpiVpa;
 exports.updateCustomer = updateCustomer;
 exports.deleteCustomer = deleteCustomer;
 exports.createPaymentLink = createPaymentLink;
-exports.activateAutopay = activateAutopay;
 exports.listCustomerPaymentLinks = listCustomerPaymentLinks;
 exports.createPayout = createPayout;
 exports.listCustomerPayouts = listCustomerPayouts;
@@ -43,7 +42,6 @@ const planChange_service_1 = require("../services/planChange.service");
 const invoice_service_1 = require("../services/invoice.service");
 const refund_service_1 = require("../services/refund.service");
 const planPricing_1 = require("../utils/planPricing");
-const autopay_service_1 = require("../services/autopay.service");
 const fileUrl_1 = require("../utils/fileUrl");
 function login(req, res) {
     const { email, password } = req.body;
@@ -130,7 +128,7 @@ async function getStats(req, res) {
                 select: { customerId: true },
                 distinct: ["customerId"]
             }),
-            prisma_1.prisma.customer.count({ where: { subscriptionStatus: "PENDING_DUE", subscriptionEnd: range } }),
+            prisma_1.prisma.customer.count({ where: { subscriptionStatus: "PENDING_DUE", nextRentDueDate: range } }),
             prisma_1.prisma.customer.count({ where: { returnRequested: true, returnRequestedAt: range } }),
             prisma_1.prisma.invoice.findMany({
                 where: { type: "REFUND", productType: "Security Deposit Refund", status: "REFUNDED", createdAt: range },
@@ -422,7 +420,13 @@ async function updateCustomer(req, res) {
             "fullName", "mobileNumber", "email", "addressLine1", "addressLine2",
             "city", "state", "pincode", "planDuration", "houseType",
             "paymentStatus", "rentalPlanDuration", "rentalAmount",
-            "subscriptionStatus", "subscriptionStart", "subscriptionEnd", "billingDay",
+            "subscriptionStatus", "billingDay",
+            // planStartDate/planEndDate: the fixed whole-term contract dates.
+            // currentRentStartDate/nextRentDueDate: the current billing cycle —
+            // currentRentEndDate is intentionally NOT directly editable here, it's
+            // always derived from nextRentDueDate below so the two can't drift out
+            // of sync with each other.
+            "planStartDate", "planEndDate", "currentRentStartDate", "nextRentDueDate",
             "returnRequested", "refundAmount", "modelName", "machineSerialNumber",
             "bankAccountHolderName", "bankName", "bankIfscCode", "bankAccountNumber"
         ];
@@ -431,10 +435,18 @@ async function updateCustomer(req, res) {
             if (req.body[field] !== undefined)
                 data[field] = req.body[field];
         }
-        if (data.subscriptionStart)
-            data.subscriptionStart = new Date(data.subscriptionStart);
-        if (data.subscriptionEnd)
-            data.subscriptionEnd = new Date(data.subscriptionEnd);
+        if (data.planStartDate)
+            data.planStartDate = new Date(data.planStartDate);
+        if (data.planEndDate)
+            data.planEndDate = new Date(data.planEndDate);
+        if (data.currentRentStartDate)
+            data.currentRentStartDate = new Date(data.currentRentStartDate);
+        if (data.nextRentDueDate) {
+            data.nextRentDueDate = new Date(data.nextRentDueDate);
+            const currentRentEndDate = new Date(data.nextRentDueDate);
+            currentRentEndDate.setDate(currentRentEndDate.getDate() - 1);
+            data.currentRentEndDate = currentRentEndDate;
+        }
         if (data.planDuration !== undefined)
             data.planDuration = parseInt(data.planDuration);
         if (data.rentalPlanDuration !== undefined)
@@ -551,22 +563,6 @@ async function createPaymentLink(req, res) {
 // the customer opens that link, authorizes it themselves, and Razorpay
 // confirms via webhook (see webhook.controller.ts) — this call just starts
 // that process, it does not activate anything itself.
-async function activateAutopay(req, res) {
-    try {
-        const customer = await prisma_1.prisma.customer.findUnique({ where: { id: req.params.id } });
-        if (!customer) {
-            return res.status(404).json({ success: false, message: "Customer not found" });
-        }
-        if (!customer.rentalPlanDuration || !customer.rentalAmount) {
-            return res.status(400).json({ success: false, message: "This customer has no established rental plan/amount yet — activate their rental first." });
-        }
-        const subscription = await (0, autopay_service_1.createAutopaySubscription)(customer.id, customer.rentalPlanDuration, customer.rentalAmount);
-        res.json({ success: true, shortUrl: subscription.short_url });
-    }
-    catch (error) {
-        res.status(500).json({ success: false, message: error.error?.description || error.message });
-    }
-}
 async function listCustomerPaymentLinks(req, res) {
     try {
         const paymentLinks = await prisma_1.prisma.paymentLinkRequest.findMany({
@@ -614,7 +610,8 @@ async function createPayout(req, res) {
             amount,
             paymentMethod: "Manual",
             status: "REFUNDED",
-            reason
+            reason,
+            proofUrl
         });
         res.json({ success: true, payout, invoice });
     }

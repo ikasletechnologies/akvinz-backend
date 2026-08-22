@@ -259,7 +259,8 @@ export async function createCustomer(req: Request, res: Response): Promise<any> 
     const {
       fullName, mobileNumber, email,
       addressLine1, addressLine2, city, state, pincode,
-      planDuration, houseType
+      planDuration, houseType,
+      depositPaymentMethod, depositTransactionId
     } = req.body;
 
     if (!fullName || !mobileNumber || !email || !addressLine1 || !city || !state || !pincode || !planDuration || !houseType) {
@@ -267,6 +268,7 @@ export async function createCustomer(req: Request, res: Response): Promise<any> 
     }
 
     const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+    const parsedPlanDuration = parseInt(planDuration);
 
     const customer = await prisma.customer.create({
       data: {
@@ -278,7 +280,7 @@ export async function createCustomer(req: Request, res: Response): Promise<any> 
         city,
         state,
         pincode,
-        planDuration: parseInt(planDuration),
+        planDuration: parsedPlanDuration,
         houseType,
         paymentStatus: "COMPLETED",
         aadharFrontImageUrl: files ? buildFileUrl(files, "aadharFrontFile") : null,
@@ -289,7 +291,21 @@ export async function createCustomer(req: Request, res: Response): Promise<any> 
       }
     });
 
-    res.json({ success: true, customer });
+    // paymentStatus is set to COMPLETED above (the admin is recording a
+    // deposit already collected offline), so a matching SECURITY_DEPOSIT
+    // invoice must be created here too — otherwise this customer would have
+    // no receipt at all, unlike the online Razorpay flow (registration.service).
+    const invoice = await createInvoice({
+      type: "SECURITY_DEPOSIT",
+      customerId: customer.id,
+      productType: "Refundable Security Deposit",
+      amount: securityDepositAmount(parsedPlanDuration),
+      paymentMethod: depositPaymentMethod || "Cash",
+      transactionId: depositTransactionId || null,
+      status: "FUNDED"
+    });
+
+    res.json({ success: true, customer, invoiceId: invoice.id });
   } catch (error: any) {
     if (error.code === "P2002") {
       return res.status(400).json({ success: false, message: "A customer with this mobile number or email already exists." });
