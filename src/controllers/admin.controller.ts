@@ -86,10 +86,10 @@ export async function getStats(req: Request, res: Response): Promise<any> {
     // whole condition. Deliberately NOT keyed off subscriptionStatus or
     // Invoice rows: subscriptionStatus flips to CANCELLED the moment a
     // return is *requested*, well before any refund happens, so it can't
-    // tell an in-progress return apart from a completed one; and a
-    // manually/offline-created customer (admin.controller.createCustomer)
-    // never gets a SECURITY_DEPOSIT invoice at all, so relying on Invoice
-    // rows silently excluded them.
+    // tell an in-progress return apart from a completed one; and customers
+    // created before createCustomer started generating a SECURITY_DEPOSIT
+    // invoice for offline signups have no Invoice row at all, so relying on
+    // Invoice rows would silently exclude them.
     const subscriberWhere = { paymentStatus: { not: "REFUNDED" } };
 
     const [
